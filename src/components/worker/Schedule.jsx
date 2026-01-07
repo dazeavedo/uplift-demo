@@ -49,15 +49,16 @@ export default function Schedule() {
               onClick={() => setSelectedWeek(idx)}
               style={{
                 padding: '10px 20px',
-                borderRadius: 'var(--radius-pill)',
+                borderRadius: '20px',
                 border: 'none',
-                background: selectedWeek === idx ? 'var(--steel-bright)' : 'var(--bg-elevated)',
-                color: selectedWeek === idx ? '#FFF' : 'var(--text-secondary)',
+                background: selectedWeek === idx ? 'var(--momentum-bright)' : 'var(--bg-secondary)',
+                color: selectedWeek === idx ? '#FFF' : 'var(--text-primary)',
                 fontSize: '14px',
                 fontWeight: '600',
                 cursor: 'pointer',
                 whiteSpace: 'nowrap',
-                transition: 'all var(--transition-base)'
+                transition: 'all 0.2s ease',
+                boxShadow: selectedWeek === idx ? '0 4px 12px rgba(255, 115, 45, 0.3)' : 'none'
               }}
             >
               {week}
@@ -66,14 +67,23 @@ export default function Schedule() {
         </div>
       </div>
 
-      {/* Total Hours Card */}
+      {/* Quick Stats */}
       <div style={{ padding: '20px' }}>
-        <StatCard
-          value="32.5"
-          label="Hours Scheduled This Week"
-          color="steel"
-          icon="⏱️"
-        />
+        <div style={{
+          background: 'var(--bg-secondary)',
+          padding: '20px',
+          borderRadius: 'var(--radius-lg)',
+          border: '1px solid var(--border-default)',
+          borderLeft: '4px solid var(--steel-bright)',
+          animation: 'slideUp 0.4s ease-out'
+        }}>
+          <div style={{ fontSize: '32px', fontWeight: '900', color: 'var(--text-primary)', marginBottom: '8px' }}>
+            32.5
+          </div>
+          <div style={{ fontSize: '14px', color: 'var(--text-secondary)' }}>
+            Hours Scheduled This Week
+          </div>
+        </div>
       </div>
 
       {/* Shifts List */}
@@ -90,205 +100,60 @@ export default function Schedule() {
           <span style={{ 
             width: '4px', 
             height: '18px', 
-            background: 'var(--momentum-bright)',
+            background: 'var(--steel-bright)',
             borderRadius: '2px'
           }} />
           Your Shifts
         </h2>
         
-        {mockData.shifts.map((shift, idx) => {
-          const statusColors = {
-            confirmed: { variant: 'success', color: 'var(--success-bright)' },
-            pending: { variant: 'warning', color: 'var(--alert-warning)' },
-            cancelled: { variant: 'danger', color: 'var(--alert-danger)' }
-          };
-          const statusStyle = statusColors[shift.status] || statusColors.confirmed;
-
-          return (
-            <Card 
-              key={shift.id}
-              variant="elevated"
-              onClick={() => navigate(`/shift/${shift.id}`)}
-              style={{ 
-                marginBottom: '16px',
-                cursor: 'pointer',
-                animation: `slideUp ${0.4 + idx * 0.1}s ease-out`,
-                borderLeft: `4px solid ${statusStyle.color}`
-              }}
-            >
-              {/* Shift Header */}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', marginBottom: '12px' }}>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: '17px', fontWeight: '700', color: 'var(--text-primary)', marginBottom: '4px' }}>
-                    {shift.role}
-                  </div>
-                  <div style={{ fontSize: '14px', color: 'var(--text-tertiary)' }}>
-                    {shift.location}
-                  </div>
-                </div>
-                <Badge variant={statusStyle.variant} size="md">
-                  {shift.status}
-                </Badge>
-              </div>
-
-              {/* Shift Details */}
-              <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', marginBottom: shift.swappable ? '12px' : '0' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '14px', color: 'var(--text-secondary)' }}>
-                  <span>📅</span>
-                  <span>{shift.date}</span>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '14px', color: 'var(--text-secondary)' }}>
-                  <span>🕐</span>
-                  <span>{shift.time}</span>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '14px', color: 'var(--text-secondary)' }}>
-                  <span>⏱️</span>
-                  <span>{shift.duration}</span>
-                </div>
-              </div>
-
-              {/* Swap Badge */}
-              {shift.swappable && (
-                <div style={{ 
-                  paddingTop: '12px',
-                  borderTop: '1px solid var(--bg-elevated)'
-                }}>
-                  <Badge variant="steel" size="md">
-                    🔄 Swap Available
-                  </Badge>
-                </div>
-              )}
-            </Card>
-          );
-        })}
-      </div>
-
-      {/* Request Time Off Button */}
-      <div style={{ padding: '20px' }}>
-        <Button
-          variant="secondary"
-          size="lg"
-          fullWidth
-        >
-          Request Time Off
-        </Button>
-      </div>
-
-      <BottomNav />
-    </div>
-  );
-}
-      {/* Header */}
-      <div style={{ 
-        background: '#2C2C2C', 
-        padding: '20px', 
-        paddingTop: '60px',
-        borderBottom: '1px solid #3A3A3A'
-      }}>
-        <h1 style={{ 
-          fontSize: '28px', 
-          fontWeight: '700', 
-          color: '#FFF', 
-          marginBottom: '16px' 
-        }}>
-          My Schedule
-        </h1>
-        
-        {/* Week Selector */}
-        <div style={{ display: 'flex', gap: '8px', overflowX: 'auto' }}>
-          {weeks.map((week, idx) => (
-            <button
-              key={idx}
-              onClick={() => setSelectedWeek(idx)}
-              style={{
-                padding: '8px 16px',
-                borderRadius: '20px',
-                border: 'none',
-                background: selectedWeek === idx ? '#6366F1' : '#3A3A3A',
-                color: '#FFF',
-                fontSize: '14px',
-                fontWeight: '500',
-                cursor: 'pointer',
-                whiteSpace: 'nowrap'
-              }}
-            >
-              {week}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Total Hours */}
-      <div style={{ padding: '20px' }}>
-        <div style={{ 
-          background: 'linear-gradient(135deg, #6366F1 0%, #8B5CF6 100%)',
-          padding: '20px',
-          borderRadius: '12px',
-          textAlign: 'center'
-        }}>
-          <div style={{ fontSize: '36px', fontWeight: '700', color: '#FFF', marginBottom: '4px' }}>
-            32.5
-          </div>
-          <div style={{ fontSize: '14px', color: 'rgba(255,255,255,0.8)' }}>
-            Hours Scheduled This Week
-          </div>
-        </div>
-      </div>
-
-      {/* Shifts List */}
-      <div style={{ padding: '0 20px' }}>
-        <h2 style={{ fontSize: '18px', fontWeight: '600', color: '#FFF', marginBottom: '16px' }}>
-          Your Shifts
-        </h2>
-        
         {mockData.shifts.map((shift, idx) => (
-          <div 
+          <Card
             key={shift.id}
-            onClick={() => navigate(`/shift/${shift.id}`)}
+            variant="elevated"
+            onClick={() => navigate(`/worker/shift/${shift.id}`)}
             style={{ 
-              background: '#2C2C2C',
-              padding: '16px',
-              borderRadius: '12px',
-              border: '1px solid #3A3A3A',
-              marginBottom: '12px',
-              cursor: 'pointer'
+              marginBottom: '16px',
+              cursor: 'pointer',
+              animation: `slideUp ${0.5 + idx * 0.05}s ease-out`,
+              borderLeft: '4px solid var(--steel-bright)'
             }}
           >
             {/* Shift Header */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', marginBottom: '12px' }}>
               <div>
-                <div style={{ fontSize: '16px', fontWeight: '600', color: '#FFF', marginBottom: '4px' }}>
+                <div style={{ fontSize: '17px', fontWeight: '700', color: 'var(--text-primary)', marginBottom: '4px' }}>
                   {shift.role}
                 </div>
-                <div style={{ fontSize: '13px', color: '#9CA3AF' }}>
+                <div style={{ fontSize: '14px', color: 'var(--text-tertiary)' }}>
                   {shift.location}
                 </div>
               </div>
-              <span style={{ 
-                fontSize: '12px', 
-                color: shift.status === 'confirmed' ? '#10B981' : shift.status === 'pending' ? '#F59E0B' : '#EF4444',
-                background: shift.status === 'confirmed' ? 'rgba(16, 185, 129, 0.1)' : shift.status === 'pending' ? 'rgba(245, 158, 11, 0.1)' : 'rgba(239, 68, 68, 0.1)',
-                padding: '4px 8px',
-                borderRadius: '6px',
-                textTransform: 'capitalize'
-              }}>
+              <Badge 
+                variant={shift.status === 'confirmed' ? 'success' : shift.status === 'pending' ? 'warning' : 'danger'}
+              >
                 {shift.status}
-              </span>
+              </Badge>
             </div>
 
             {/* Shift Details */}
-            <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
+            <div style={{ 
+              display: 'flex', 
+              gap: '16px', 
+              flexWrap: 'wrap',
+              paddingTop: '12px',
+              borderTop: '1px solid var(--border-subtle)'
+            }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                 <span style={{ fontSize: '16px' }}>📅</span>
-                <span style={{ fontSize: '14px', color: '#9CA3AF' }}>{shift.date}</span>
+                <span style={{ fontSize: '14px', color: 'var(--text-secondary)' }}>{shift.date}</span>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                 <span style={{ fontSize: '16px' }}>🕐</span>
-                <span style={{ fontSize: '14px', color: '#9CA3AF' }}>{shift.time}</span>
+                <span style={{ fontSize: '14px', color: 'var(--text-secondary)' }}>{shift.time}</span>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                 <span style={{ fontSize: '16px' }}>⏱️</span>
-                <span style={{ fontSize: '14px', color: '#9CA3AF' }}>{shift.duration}</span>
+                <span style={{ fontSize: '14px', color: 'var(--text-secondary)' }}>{shift.duration}</span>
               </div>
             </div>
 
@@ -297,38 +162,25 @@ export default function Schedule() {
               <div style={{ 
                 marginTop: '12px',
                 paddingTop: '12px',
-                borderTop: '1px solid #3A3A3A'
+                borderTop: '1px solid var(--border-subtle)'
               }}>
-                <span style={{ 
-                  fontSize: '12px',
-                  color: '#6366F1',
-                  background: 'rgba(99, 102, 241, 0.1)',
-                  padding: '4px 8px',
-                  borderRadius: '6px'
-                }}>
+                <Badge variant="default">
                   🔄 Swap Available
-                </span>
+                </Badge>
               </div>
             )}
-          </div>
+          </Card>
         ))}
       </div>
 
       {/* Request Time Off Button */}
       <div style={{ padding: '20px' }}>
-        <button style={{
-          width: '100%',
-          padding: '16px',
-          background: '#6366F1',
-          color: '#FFF',
-          border: 'none',
-          borderRadius: '12px',
-          fontSize: '16px',
-          fontWeight: '600',
-          cursor: 'pointer'
-        }}>
+        <Button
+          variant="outline"
+          fullWidth
+        >
           Request Time Off
-        </button>
+        </Button>
       </div>
 
       <BottomNav />
