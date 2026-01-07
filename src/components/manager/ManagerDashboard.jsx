@@ -560,4 +560,3 @@ export default function ManagerDashboard() {
     </div>
   );
 }
-// Updated Wed  7 Jan 2026 21:52:24 GMT
