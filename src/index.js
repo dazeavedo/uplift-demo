@@ -15,7 +15,7 @@ const pool = new pg.Pool({
 
 // Middleware
 app.use(cors({
-  origin: ['https://uplift-portal-hpg4.vercel.app', 'http://localhost:5173'],
+  origin: ['https://upliftportaldemo.netlify.app', 'http://localhost:5173'],
   credentials: true
 }));
 app.use(express.json());
