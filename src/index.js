@@ -1,6 +1,5 @@
 // ============================================================
-// UPLIFT API SERVER - COMPLETE
-// Supports all frontend endpoints
+// UPLIFT API SERVER - COMPLETE WITH DEBUG
 // ============================================================
 import express from 'express';
 import cors from 'cors';
@@ -36,7 +35,7 @@ app.use(cors({
     if (process.env.FRONTEND_URL && origin === process.env.FRONTEND_URL) {
       return callback(null, true);
     }
-    callback(null, true); // Allow all in demo
+    callback(null, true);
   },
   credentials: true
 }));
@@ -97,7 +96,13 @@ app.get('/api/health', (req, res) => {
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
+    
+    console.log('=== LOGIN ATTEMPT ===');
+    console.log('Email:', email);
+    console.log('Password received:', password);
+    
     if (!email || !password) {
+      console.log('Missing email or password');
       return res.status(400).json({ error: 'Email and password required' });
     }
     
@@ -105,19 +110,31 @@ app.post('/api/auth/login', async (req, res) => {
     const user = result.rows[0];
     
     if (!user) {
+      console.log('User not found in database');
       return res.status(401).json({ error: 'Invalid credentials' });
     }
     
+    console.log('User found:', user.email);
+    console.log('Stored hash:', user.password_hash);
+    console.log('Hash length:', user.password_hash?.length);
+    
     const validPassword = await bcrypt.compare(password, user.password_hash);
+    console.log('bcrypt.compare result:', validPassword);
+    
     if (!validPassword) {
+      console.log('Password invalid');
       return res.status(401).json({ error: 'Invalid credentials' });
     }
+    
+    console.log('Password valid - generating token');
     
     const token = jwt.sign(
       { userId: user.id, organizationId: user.organization_id, role: user.role },
       JWT_SECRET,
       { expiresIn: '7d' }
     );
+    
+    console.log('Login successful for:', email);
     
     res.json({
       token,
@@ -768,7 +785,7 @@ app.use((err, req, res, next) => {
 app.listen(PORT, () => {
   console.log(`
 ╔════════════════════════════════════════╗
-║     UPLIFT API SERVER - COMPLETE       ║
+║     UPLIFT API SERVER - DEBUG          ║
 ║     Port: ${PORT}                          ║
 ╚════════════════════════════════════════╝
   `);
