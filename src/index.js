@@ -15,10 +15,22 @@ const pool = new pg.Pool({
 
 // Middleware
 app.use(cors({
-     origin: ['https://uplift-demo-cshw.vercel.app', 'http://localhost:5173'],
-     credentials: true
-   }));
+  origin: ['https://uplift-demo-cshw.vercel.app', 'http://localhost:5173'],
+  credentials: true
+}));
 app.use(express.json());
+
+// Auth middleware
+const auth = (req, res, next) => {
+  const token = req.headers.authorization?.replace('Bearer ', '');
+  if (!token) return res.status(401).json({ error: 'No token' });
+  try {
+    req.user = jwt.verify(token, process.env.JWT_SECRET);
+    next();
+  } catch {
+    res.status(401).json({ error: 'Invalid token' });
+  }
+};
 
 // Health check
 app.get('/health', (req, res) => {
@@ -69,18 +81,6 @@ app.get('/api/auth/me', auth, async (req, res) => {
     res.status(500).json({ error: 'Server error' });
   }
 });
-
-// Auth middleware
-const auth = (req, res, next) => {
-  const token = req.headers.authorization?.replace('Bearer ', '');
-  if (!token) return res.status(401).json({ error: 'No token' });
-  try {
-    req.user = jwt.verify(token, process.env.JWT_SECRET);
-    next();
-  } catch {
-    res.status(401).json({ error: 'Invalid token' });
-  }
-};
 
 // Get employees
 app.get('/api/employees', auth, async (req, res) => {
