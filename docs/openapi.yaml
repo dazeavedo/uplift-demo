@@ -1,0 +1,716 @@
+openapi: 3.0.3
+info:
+  title: Uplift Core API
+  description: |
+    Workforce management platform API for scheduling, time tracking, and employee management.
+    
+    ## Authentication
+    All endpoints except `/auth/login`, `/auth/register`, and `/health` require authentication.
+    Authentication uses httpOnly cookies set by the login endpoint.
+    
+    ## CSRF Protection
+    Non-GET requests require a CSRF token. Get a token from `GET /csrf-token` and include it in the `X-CSRF-Token` header.
+    
+    ## Rate Limiting
+    - Auth endpoints: 10 requests per 15 minutes
+    - API endpoints: 100 requests per 15 minutes
+    
+  version: 1.0.0
+  contact:
+    name: Uplift Support
+    email: support@uplift.hr
+
+servers:
+  - url: http://localhost:3000/api
+    description: Development
+  - url: https://api.uplift.hr/api
+    description: Production
+
+tags:
+  - name: Auth
+    description: Authentication and user management
+  - name: Employees
+    description: Employee management
+  - name: Locations
+    description: Location management
+  - name: Shifts
+    description: Shift scheduling
+  - name: Time
+    description: Time tracking and timesheets
+  - name: TimeOff
+    description: Time off requests and policies
+  - name: Dashboard
+    description: Analytics and reporting
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      tags: [System]
+      responses:
+        '200':
+          description: API is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  timestamp:
+                    type: string
+                    format: date-time
+
+  /csrf-token:
+    get:
+      summary: Get CSRF token
+      tags: [System]
+      responses:
+        '200':
+          description: CSRF token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  csrfToken:
+                    type: string
+
+  /auth/login:
+    post:
+      summary: Login
+      tags: [Auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+      responses:
+        '200':
+          description: Login successful
+          headers:
+            Set-Cookie:
+              description: httpOnly cookies with access and refresh tokens
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/register:
+    post:
+      summary: Register new organization
+      tags: [Auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [organizationName, email, password, firstName, lastName]
+              properties:
+                organizationName:
+                  type: string
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  minLength: 8
+                  description: "Must contain uppercase, lowercase, and number"
+                firstName:
+                  type: string
+                lastName:
+                  type: string
+      responses:
+        '201':
+          description: Registration successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          description: Email already exists
+
+  /auth/refresh:
+    post:
+      summary: Refresh access token
+      tags: [Auth]
+      description: Uses refresh token from cookie to issue new access token. Implements token rotation.
+      responses:
+        '200':
+          description: Token refreshed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/logout:
+    post:
+      summary: Logout
+      tags: [Auth]
+      responses:
+        '200':
+          description: Logged out
+
+  /auth/me:
+    get:
+      summary: Get current user
+      tags: [Auth]
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Current user
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user:
+                    $ref: '#/components/schemas/User'
+
+  /employees:
+    get:
+      summary: List employees
+      tags: [Employees]
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, inactive, terminated]
+        - name: departmentId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: locationId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: search
+          in: query
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: Employee list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  employees:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Employee'
+                  total:
+                    type: integer
+                  page:
+                    type: integer
+                  pages:
+                    type: integer
+    post:
+      summary: Create employee
+      tags: [Employees]
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmployeeInput'
+      responses:
+        '201':
+          description: Employee created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  employee:
+                    $ref: '#/components/schemas/Employee'
+
+  /employees/{id}:
+    get:
+      summary: Get employee
+      tags: [Employees]
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/id'
+      responses:
+        '200':
+          description: Employee details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  employee:
+                    $ref: '#/components/schemas/Employee'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      summary: Update employee
+      tags: [Employees]
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmployeeInput'
+      responses:
+        '200':
+          description: Employee updated
+    delete:
+      summary: Delete employee
+      tags: [Employees]
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/id'
+      responses:
+        '200':
+          description: Employee deleted
+
+  /shifts:
+    get:
+      summary: List shifts
+      tags: [Shifts]
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: startDate
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: endDate
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: locationId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: employeeId
+          in: query
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Shift list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  shifts:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Shift'
+    post:
+      summary: Create shift
+      tags: [Shifts]
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ShiftInput'
+      responses:
+        '201':
+          description: Shift created
+
+  /time/clock-in:
+    post:
+      summary: Clock in
+      tags: [Time]
+      security:
+        - cookieAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                locationId:
+                  type: string
+                  format: uuid
+                latitude:
+                  type: number
+                longitude:
+                  type: number
+      responses:
+        '200':
+          description: Clocked in
+
+  /time/clock-out:
+    post:
+      summary: Clock out
+      tags: [Time]
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Clocked out
+
+  /time/entries:
+    get:
+      summary: List time entries
+      tags: [Time]
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: startDate
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: endDate
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, approved, rejected]
+      responses:
+        '200':
+          description: Time entries
+
+  /time/pending:
+    get:
+      summary: Get pending approvals
+      tags: [Time]
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Pending time entries
+
+  /time-off/policies:
+    get:
+      summary: List time off policies
+      tags: [TimeOff]
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Policy list
+
+  /time-off/requests:
+    get:
+      summary: List time off requests
+      tags: [TimeOff]
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Request list
+    post:
+      summary: Create time off request
+      tags: [TimeOff]
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [policyId, startDate, endDate]
+              properties:
+                policyId:
+                  type: string
+                  format: uuid
+                startDate:
+                  type: string
+                  format: date
+                endDate:
+                  type: string
+                  format: date
+                reason:
+                  type: string
+      responses:
+        '201':
+          description: Request created
+
+  /dashboard:
+    get:
+      summary: Get dashboard data
+      tags: [Dashboard]
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Dashboard metrics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  today:
+                    type: object
+                  week:
+                    type: object
+                  pending:
+                    type: object
+
+  /reports/hours:
+    get:
+      summary: Hours worked report
+      tags: [Dashboard]
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: startDate
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: endDate
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: groupBy
+          in: query
+          schema:
+            type: string
+            enum: [employee, location, day]
+      responses:
+        '200':
+          description: Hours report
+
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: accessToken
+
+  parameters:
+    id:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Authentication required
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: Insufficient permissions
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+        firstName:
+          type: string
+        lastName:
+          type: string
+        role:
+          type: string
+          enum: [superadmin, admin, manager, worker]
+        organizationId:
+          type: string
+          format: uuid
+
+    AuthResponse:
+      type: object
+      properties:
+        user:
+          $ref: '#/components/schemas/User'
+
+    Employee:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        firstName:
+          type: string
+        lastName:
+          type: string
+        email:
+          type: string
+        phone:
+          type: string
+        employeeNumber:
+          type: string
+        employmentType:
+          type: string
+          enum: [full_time, part_time, casual, contractor]
+        status:
+          type: string
+          enum: [active, inactive, terminated]
+        startDate:
+          type: string
+          format: date
+        departmentId:
+          type: string
+          format: uuid
+        primaryLocationId:
+          type: string
+          format: uuid
+        hourlyRate:
+          type: number
+
+    EmployeeInput:
+      type: object
+      required: [firstName, lastName]
+      properties:
+        firstName:
+          type: string
+        lastName:
+          type: string
+        email:
+          type: string
+        phone:
+          type: string
+        employmentType:
+          type: string
+        startDate:
+          type: string
+          format: date
+        departmentId:
+          type: string
+          format: uuid
+        primaryLocationId:
+          type: string
+          format: uuid
+        hourlyRate:
+          type: number
+
+    Shift:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        date:
+          type: string
+          format: date
+        startTime:
+          type: string
+          format: time
+        endTime:
+          type: string
+          format: time
+        employeeId:
+          type: string
+          format: uuid
+        locationId:
+          type: string
+          format: uuid
+        isOpen:
+          type: boolean
+        status:
+          type: string
+          enum: [scheduled, completed, cancelled]
+
+    ShiftInput:
+      type: object
+      required: [date, startTime, endTime, locationId]
+      properties:
+        date:
+          type: string
+          format: date
+        startTime:
+          type: string
+        endTime:
+          type: string
+        employeeId:
+          type: string
+          format: uuid
+        locationId:
+          type: string
+          format: uuid
+        isOpen:
+          type: boolean
+        breakMinutes:
+          type: integer

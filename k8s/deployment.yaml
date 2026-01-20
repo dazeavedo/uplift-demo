@@ -1,0 +1,281 @@
+# ============================================================
+# UPLIFT API - KUBERNETES DEPLOYMENT
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: uplift-api
+  labels:
+    app: uplift
+    component: api
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: uplift
+      component: api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: uplift
+        component: api
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3000"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: uplift-api
+      
+      containers:
+        - name: api
+          image: ghcr.io/uplift-hr/uplift-core:latest
+          imagePullPolicy: Always
+          
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          
+          env:
+            - name: NODE_ENV
+              value: "production"
+            - name: PORT
+              value: "3000"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: uplift-secrets
+                  key: database-url
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: uplift-secrets
+                  key: redis-url
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: uplift-secrets
+                  key: jwt-secret
+            - name: APP_URL
+              value: "https://app.uplift.hr"
+            - name: EMAIL_PROVIDER
+              value: "sendgrid"
+            - name: SENDGRID_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: uplift-secrets
+                  key: sendgrid-api-key
+          
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          
+          readinessProbe:
+            httpGet:
+              path: /api/health/ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+      
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - uplift
+                topologyKey: kubernetes.io/hostname
+      
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: uplift
+
+---
+# ============================================================
+# SERVICE
+# ============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: uplift-api
+  labels:
+    app: uplift
+    component: api
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app: uplift
+    component: api
+
+---
+# ============================================================
+# HORIZONTAL POD AUTOSCALER
+# ============================================================
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: uplift-api
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: uplift-api
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 10
+          periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 15
+        - type: Pods
+          value: 4
+          periodSeconds: 15
+      selectPolicy: Max
+
+---
+# ============================================================
+# POD DISRUPTION BUDGET
+# ============================================================
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: uplift-api
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: uplift
+      component: api
+
+---
+# ============================================================
+# SERVICE ACCOUNT
+# ============================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: uplift-api
+  labels:
+    app: uplift
+
+---
+# ============================================================
+# INGRESS
+# ============================================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: uplift-api
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  tls:
+    - hosts:
+        - api.uplift.hr
+      secretName: uplift-api-tls
+  rules:
+    - host: api.uplift.hr
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: uplift-api
+                port:
+                  number: 80
+
+---
+# ============================================================
+# SECRETS (template - replace with real values)
+# ============================================================
+apiVersion: v1
+kind: Secret
+metadata:
+  name: uplift-secrets
+type: Opaque
+stringData:
+  database-url: "postgresql://user:password@db-host:5432/uplift"
+  redis-url: "redis://redis-host:6379"
+  jwt-secret: "your-secure-jwt-secret-here"
+  sendgrid-api-key: "SG.your-sendgrid-api-key"
+
+---
+# ============================================================
+# CONFIGMAP
+# ============================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: uplift-config
+data:
+  NODE_ENV: "production"
+  LOG_LEVEL: "info"
+  LOG_FORMAT: "json"
+  RATE_LIMIT_AUTH: "10"
+  RATE_LIMIT_API: "100"
