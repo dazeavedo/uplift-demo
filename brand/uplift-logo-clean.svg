@@ -1,0 +1,38 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Uplift Rising U - Clean Version -->
+  <!-- Simple, bold, works at any size -->
+  
+  <defs>
+    <linearGradient id="momentumGradient" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#FF6B35"/>
+      <stop offset="100%" style="stop-color:#FF8F5C"/>
+    </linearGradient>
+  </defs>
+  
+  <!-- Combined U shape with rising right arm -->
+  <path d="
+    M128 120
+    L128 344
+    Q128 408 192 408
+    L320 408
+    Q384 408 384 344
+    L384 232
+    L336 168
+    L336 344
+    Q336 360 320 360
+    L192 360
+    Q176 360 176 344
+    L176 120
+    Z
+  " fill="#FF6B35"/>
+  
+  <!-- Rising arrow/chevron -->
+  <path d="
+    M336 168
+    L384 232
+    L432 168
+    L384 104
+    Z
+  " fill="#FF6B35"/>
+  
+</svg>
