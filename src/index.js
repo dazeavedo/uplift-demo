@@ -14,7 +14,10 @@ const pool = new pg.Pool({
 });
 
 // Middleware
-app.use(cors());
+app.use(cors({
+     origin: ['https://uplift-demo-cshw.vercel.app', 'http://localhost:5173'],
+     credentials: true
+   }));
 app.use(express.json());
 
 // Health check
