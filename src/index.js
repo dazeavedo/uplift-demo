@@ -53,6 +53,23 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
+// Get current user
+app.get('/api/auth/me', auth, async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT id, email, first_name, last_name, role FROM users WHERE id = $1',
+      [req.user.userId]
+    );
+    if (!result.rows[0]) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    res.json({ user: result.rows[0] });
+  } catch (error) {
+    console.error('Auth me error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // Auth middleware
 const auth = (req, res, next) => {
   const token = req.headers.authorization?.replace('Bearer ', '');
