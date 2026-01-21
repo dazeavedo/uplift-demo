@@ -271,11 +271,11 @@ app.get('/api/time/pending', authMiddleware, async (req, res) => {
 app.get('/api/skills/:id/employees', authMiddleware, async (req, res) => {
   try {
     const result = await db.query(`
-      SELECT e.id, e.first_name, e.last_name, e.email, es.proficiency_level
+      SELECT e.id, e.first_name, e.last_name, e.email, es.level
       FROM employee_skills es
       JOIN employees e ON e.id = es.employee_id
       WHERE es.skill_id = $1 AND e.organization_id = $2 AND e.status = 'active'
-      ORDER BY es.proficiency_level DESC, e.last_name
+      ORDER BY es.level DESC, e.last_name
     `, [req.params.id, req.user.organizationId]);
     res.json({ employees: result.rows });
   } catch (error) {
