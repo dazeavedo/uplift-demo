@@ -226,12 +226,25 @@ app.get('/api/dashboard', authMiddleware, async (req, res) => {
     const orgId = req.user.organizationId;
     const today = new Date().toISOString().split('T')[0];
 
-    const [employees, locations, shiftsToday, pendingTimeOff, openShifts] = await Promise.all([
+    const [employees, locations, shiftsToday, pendingTimeOff, openShifts, weekMetrics] = await Promise.all([
       db.query(`SELECT COUNT(*) FROM employees WHERE organization_id = $1 AND status = 'active'`, [orgId]),
       db.query(`SELECT COUNT(*) FROM locations WHERE organization_id = $1 AND status = 'active'`, [orgId]),
       db.query(`SELECT COUNT(*) FROM shifts WHERE organization_id = $1 AND date = $2`, [orgId, today]),
       db.query(`SELECT COUNT(*) FROM time_off_requests WHERE organization_id = $1 AND status = 'pending'`, [orgId]),
       db.query(`SELECT COUNT(*) FROM shifts WHERE organization_id = $1 AND is_open = true AND date >= $2`, [orgId, today]),
+      db.query(`
+        SELECT 
+          COALESCE(SUM(EXTRACT(EPOCH FROM (s.end_time - s.start_time))/3600), 0) as scheduled,
+          COALESCE(SUM(te.total_hours), 0) as worked,
+          COALESCE(SUM(EXTRACT(EPOCH FROM (s.end_time - s.start_time))/3600 * COALESCE(r.default_hourly_rate, 12)), 0) as cost_scheduled,
+          COALESCE(SUM(te.total_hours * COALESCE(r.default_hourly_rate, 12)), 0) as cost_actual
+        FROM shifts s
+        LEFT JOIN time_entries te ON te.shift_id = s.id
+        LEFT JOIN roles r ON r.id = s.role_id
+        WHERE s.organization_id = $1 
+          AND s.date >= date_trunc('week', CURRENT_DATE)
+          AND s.date < date_trunc('week', CURRENT_DATE) + INTERVAL '7 days'
+      `, [orgId]),
     ]);
 
     res.json({
@@ -239,8 +252,14 @@ app.get('/api/dashboard', authMiddleware, async (req, res) => {
       activeEmployees: parseInt(employees.rows[0].count),
       activeLocations: parseInt(locations.rows[0].count),
       shiftsToday: parseInt(shiftsToday.rows[0].count),
-      pendingApprovals: { time_off: parseInt(pendingTimeOff.rows[0].count) },
+      pendingApprovals: { time_off: parseInt(pendingTimeOff.rows[0].count), timesheets: 0 },
       openShifts: parseInt(openShifts.rows[0].count),
+      weekMetrics: {
+        scheduled: parseFloat(weekMetrics.rows[0].scheduled || 0).toFixed(0),
+        worked: parseFloat(weekMetrics.rows[0].worked || 0).toFixed(0),
+        cost_scheduled: parseFloat(weekMetrics.rows[0].cost_scheduled || 0).toFixed(0),
+        cost_actual: parseFloat(weekMetrics.rows[0].cost_actual || 0).toFixed(0),
+      },
     });
   } catch (error) {
     console.error('Dashboard error:', error);
