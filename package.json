@@ -1,28 +1,20 @@
 {
-  "name": "uplift-platform",
+  "name": "uplift-demo-api",
   "version": "1.0.0",
-  "description": "Uplift Workforce Intelligence Platform",
   "type": "module",
-  "main": "src/index.js",
+  "main": "index.js",
   "scripts": {
-    "start": "node src/index.js",
-    "dev": "nodemon src/index.js"
+    "start": "node index.js",
+    "dev": "node --watch index.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
-    "compression": "^1.7.4",
-    "cookie-parser": "^1.4.6",
     "cors": "^2.8.5",
     "express": "^4.18.2",
-    "express-rate-limit": "^7.1.5",
-    "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.2",
-    "pg": "^8.11.3",
-    "socket.io": "^4.7.4",
-    "stripe": "^14.12.0",
-    "zod": "^3.22.4"
+    "pg": "^8.11.3"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=18"
   }
 }
