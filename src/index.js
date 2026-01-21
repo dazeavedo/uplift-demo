@@ -134,6 +134,75 @@ app.post('/api/auth/logout', (req, res) => {
   res.json({ success: true });
 });
 
+// Pending Time Entries
+app.get('/api/time/pending', authMiddleware, async (req, res) => {
+  try {
+    const { locationId } = req.query;
+    let query = `
+      SELECT te.*, e.first_name, e.last_name, l.name as location_name
+      FROM time_entries te
+      JOIN employees e ON e.id = te.employee_id
+      LEFT JOIN locations l ON l.id = te.location_id
+      WHERE te.organization_id = $1 AND te.status = 'pending'
+    `;
+    const params = [req.user.organizationId];
+    if (locationId && locationId !== 'undefined') {
+      query += ` AND te.location_id = $2`;
+      params.push(locationId);
+    }
+    query += ` ORDER BY te.clock_in DESC LIMIT 50`;
+    const result = await db.query(query, params);
+    res.json({ entries: result.rows, total: result.rows.length });
+  } catch (error) {
+    console.error('Get pending time error:', error);
+    res.status(500).json({ error: 'Failed to get pending time entries' });
+  }
+});
+
+// Employees by Skill
+app.get('/api/skills/:id/employees', authMiddleware, async (req, res) => {
+  try {
+    const result = await db.query(`
+      SELECT e.id, e.first_name, e.last_name, e.email, es.proficiency_level
+      FROM employee_skills es
+      JOIN employees e ON e.id = es.employee_id
+      WHERE es.skill_id = $1 AND e.organization_id = $2 AND e.status = 'active'
+      ORDER BY es.proficiency_level DESC, e.last_name
+    `, [req.params.id, req.user.organizationId]);
+    res.json({ employees: result.rows });
+  } catch (error) {
+    console.error('Get skill employees error:', error);
+    res.status(500).json({ error: 'Failed to get employees' });
+  }
+});
+
+// Forecast endpoint
+app.get('/api/forecast', authMiddleware, async (req, res) => {
+  try {
+    const weeks = parseInt(req.query.weeks) || 2;
+    const days = [];
+    for (let i = 0; i < weeks * 7; i++) {
+      const date = new Date();
+      date.setDate(date.getDate() + i);
+      const dateStr = date.toISOString().split('T')[0];
+      const result = await db.query(`
+        SELECT COUNT(*) as total, SUM(CASE WHEN is_open THEN 1 ELSE 0 END) as open
+        FROM shifts WHERE organization_id = $1 AND date = $2
+      `, [req.user.organizationId, dateStr]);
+      days.push({
+        date: dateStr,
+        shifts: parseInt(result.rows[0].total) || 0,
+        open: parseInt(result.rows[0].open) || 0,
+        filled: parseInt(result.rows[0].total) - parseInt(result.rows[0].open) || 0
+      });
+    }
+    res.json({ forecast: days });
+  } catch (error) {
+    console.error('Forecast error:', error);
+    res.status(500).json({ error: 'Failed to get forecast' });
+  }
+});
+
 // Organization
 app.get('/api/organization', authMiddleware, async (req, res) => {
   try {
