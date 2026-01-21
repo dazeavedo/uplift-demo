@@ -494,6 +494,35 @@ app.delete('/api/shifts/:id', authMiddleware, async (req, res) => {
   }
 });
 
+// Open Shifts
+app.get('/api/open-shifts', authMiddleware, async (req, res) => {
+  try {
+    const { start, end } = req.query;
+    let query = `
+      SELECT s.*, l.name as location_name, r.name as role_name
+      FROM shifts s
+      LEFT JOIN locations l ON l.id = s.location_id
+      LEFT JOIN roles r ON r.id = s.role_id
+      WHERE s.organization_id = $1 AND s.is_open = true
+    `;
+    const params = [req.user.organizationId];
+    let paramIndex = 2;
+    if (start) {
+      query += ` AND s.date >= $${paramIndex++}`;
+      params.push(start);
+    }
+    if (end) {
+      query += ` AND s.date <= $${paramIndex++}`;
+      params.push(end);
+    }
+    query += ` ORDER BY s.date, s.start_time LIMIT 100`;
+    const result = await db.query(query, params);
+    res.json({ shifts: result.rows });
+  } catch (error) {
+    console.error('Get open shifts error:', error);
+    res.status(500).json({ error: 'Failed to get open shifts' });
+  }
+});
 // Shift Templates
 app.get('/api/shift-templates', authMiddleware, (req, res) => {
   res.json({ templates: [] });
