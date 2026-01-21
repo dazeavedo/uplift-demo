@@ -1,80 +1,96 @@
 // ============================================================
-// UPLIFT API SERVER - COMPLETE WITH DEBUG
+// UPLIFT DEMO API
+// Complete Express backend with all endpoints
 // ============================================================
+
 import express from 'express';
 import cors from 'cors';
+import jwt from 'jsonwebtoken';
 import pg from 'pg';
 import bcrypt from 'bcryptjs';
-import jwt from 'jsonwebtoken';
 
+const { Pool } = pg;
 const app = express();
 const PORT = process.env.PORT || 3000;
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-in-production';
 
 // ============================================================
-// DATABASE
+// DATABASE CONNECTION
 // ============================================================
-const pool = new pg.Pool({
+
+const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
 });
 
-pool.query('SELECT NOW()')
-  .then(() => console.log('✓ Database connected'))
-  .catch(err => console.error('✗ Database connection failed:', err.message));
+const db = {
+  query: (text, params) => pool.query(text, params),
+};
 
 // ============================================================
 // MIDDLEWARE
 // ============================================================
+
+// CORS - Allow specific origins
+const allowedOrigins = [
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'https://upliftportaldemo.netlify.app',
+  process.env.PORTAL_URL,
+].filter(Boolean);
+
 app.use(cors({
-  origin: function(origin, callback) {
-    if (!origin) return callback(null, true);
-    if (origin.includes('netlify.app') || origin.includes('vercel.app') || origin.includes('localhost')) {
-      return callback(null, true);
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(null, true); // Allow all for demo
     }
-    if (process.env.FRONTEND_URL && origin === process.env.FRONTEND_URL) {
-      return callback(null, true);
-    }
-    callback(null, true);
   },
-  credentials: true
+  credentials: true,
 }));
 
 app.use(express.json());
 
-app.use((req, res, next) => {
-  console.log(`${new Date().toISOString()} ${req.method} ${req.path}`);
-  next();
-});
+// JWT Secret
+const JWT_SECRET = process.env.JWT_SECRET || 'demo-jwt-secret-2026';
 
-// ============================================================
-// AUTH MIDDLEWARE
-// ============================================================
-const authenticate = async (req, res, next) => {
+// Auth Middleware
+const authMiddleware = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    if (!authHeader?.startsWith('Bearer ')) {
       return res.status(401).json({ error: 'No token provided' });
     }
-    
-    const token = authHeader.substring(7);
+
+    const token = authHeader.slice(7);
     const decoded = jwt.verify(token, JWT_SECRET);
     
-    const result = await pool.query(
-      'SELECT id, email, first_name, last_name, role, organization_id FROM users WHERE id = $1',
+    // Get user from database
+    const result = await db.query(
+      `SELECT u.*, o.name as organization_name 
+       FROM users u 
+       JOIN organizations o ON o.id = u.organization_id 
+       WHERE u.id = $1`,
       [decoded.userId]
     );
-    
+
     if (!result.rows[0]) {
       return res.status(401).json({ error: 'User not found' });
     }
-    
-    req.user = result.rows[0];
+
+    req.user = {
+      userId: result.rows[0].id,
+      email: result.rows[0].email,
+      role: result.rows[0].role,
+      firstName: result.rows[0].first_name,
+      lastName: result.rows[0].last_name,
+      organizationId: result.rows[0].organization_id,
+      organizationName: result.rows[0].organization_name,
+    };
+
     next();
   } catch (error) {
-    if (error.name === 'TokenExpiredError') {
-      return res.status(401).json({ error: 'Token expired' });
-    }
+    console.error('Auth error:', error);
     return res.status(401).json({ error: 'Invalid token' });
   }
 };
@@ -82,8 +98,14 @@ const authenticate = async (req, res, next) => {
 // ============================================================
 // HEALTH CHECK
 // ============================================================
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+
+app.get('/health', async (req, res) => {
+  try {
+    await db.query('SELECT 1');
+    res.json({ status: 'healthy', timestamp: new Date().toISOString() });
+  } catch (error) {
+    res.status(503).json({ status: 'unhealthy', error: error.message });
+  }
 });
 
 app.get('/api/health', (req, res) => {
@@ -93,49 +115,53 @@ app.get('/api/health', (req, res) => {
 // ============================================================
 // AUTH ROUTES
 // ============================================================
+
+// Login
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
-    
-    console.log('=== LOGIN ATTEMPT ===');
-    console.log('Email:', email);
-    console.log('Password received:', password);
-    
+
     if (!email || !password) {
-      console.log('Missing email or password');
       return res.status(400).json({ error: 'Email and password required' });
     }
-    
-    const result = await pool.query('SELECT * FROM users WHERE email = $1', [email.toLowerCase().trim()]);
-    const user = result.rows[0];
-    
-    if (!user) {
-      console.log('User not found in database');
-      return res.status(401).json({ error: 'Invalid credentials' });
-    }
-    
-    console.log('User found:', user.email);
-    console.log('Stored hash:', user.password_hash);
-    console.log('Hash length:', user.password_hash?.length);
-    
-    const validPassword = await bcrypt.compare(password, user.password_hash);
-    console.log('bcrypt.compare result:', validPassword);
-    
-    if (!validPassword) {
-      console.log('Password invalid');
-      return res.status(401).json({ error: 'Invalid credentials' });
-    }
-    
-    console.log('Password valid - generating token');
-    
-    const token = jwt.sign(
-      { userId: user.id, organizationId: user.organization_id, role: user.role },
-      JWT_SECRET,
-      { expiresIn: '7d' }
+
+    // Find user
+    const result = await db.query(
+      `SELECT u.*, o.name as organization_name 
+       FROM users u 
+       JOIN organizations o ON o.id = u.organization_id 
+       WHERE u.email = $1`,
+      [email.toLowerCase()]
     );
-    
-    console.log('Login successful for:', email);
-    
+
+    const user = result.rows[0];
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    // Check password using pgcrypto
+    const pwCheck = await db.query(
+      `SELECT (password_hash = crypt($1, password_hash)) as valid FROM users WHERE id = $2`,
+      [password, user.id]
+    );
+
+    if (!pwCheck.rows[0]?.valid) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    // Generate token
+    const token = jwt.sign(
+      { userId: user.id, email: user.email, role: user.role, organizationId: user.organization_id },
+      JWT_SECRET,
+      { expiresIn: '24h' }
+    );
+
+    // Update last login
+    await db.query(
+      `UPDATE users SET last_login_at = NOW() WHERE id = $1`,
+      [user.id]
+    );
+
     res.json({
       token,
       user: {
@@ -144,649 +170,961 @@ app.post('/api/auth/login', async (req, res) => {
         firstName: user.first_name,
         lastName: user.last_name,
         role: user.role,
-        organizationId: user.organization_id
-      }
+        organizationId: user.organization_id,
+        organizationName: user.organization_name,
+      },
     });
   } catch (error) {
     console.error('Login error:', error);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-app.get('/api/auth/me', authenticate, (req, res) => {
+// Get current user
+app.get('/api/auth/me', authMiddleware, async (req, res) => {
   res.json({
     user: {
-      id: req.user.id,
+      id: req.user.userId,
       email: req.user.email,
-      firstName: req.user.first_name,
-      lastName: req.user.last_name,
+      firstName: req.user.firstName,
+      lastName: req.user.lastName,
       role: req.user.role,
-      organizationId: req.user.organization_id
-    }
+      organizationId: req.user.organizationId,
+      organizationName: req.user.organizationName,
+    },
   });
 });
 
+// Logout (stateless - just for client cleanup)
 app.post('/api/auth/logout', (req, res) => {
   res.json({ success: true });
 });
 
-app.post('/api/auth/register', async (req, res) => {
-  res.status(501).json({ error: 'Registration disabled in demo' });
-});
-
-app.post('/api/auth/password/reset-request', async (req, res) => {
-  res.json({ success: true, message: 'If email exists, reset link sent' });
-});
-
-app.post('/api/auth/password/reset', async (req, res) => {
-  res.status(501).json({ error: 'Password reset disabled in demo' });
-});
-
-app.post('/api/auth/password/change', authenticate, async (req, res) => {
-  res.status(501).json({ error: 'Password change disabled in demo' });
-});
-
-app.get('/api/auth/users', authenticate, async (req, res) => {
+// Change password
+app.post('/api/auth/password/change', authMiddleware, async (req, res) => {
   try {
-    const result = await pool.query(
-      'SELECT id, email, first_name, last_name, role, status FROM users WHERE organization_id = $1',
-      [req.user.organization_id]
+    const { currentPassword, newPassword } = req.body;
+
+    // Verify current password
+    const pwCheck = await db.query(
+      `SELECT (password_hash = crypt($1, password_hash)) as valid FROM users WHERE id = $2`,
+      [currentPassword, req.user.userId]
     );
-    res.json({ users: result.rows });
+
+    if (!pwCheck.rows[0]?.valid) {
+      return res.status(400).json({ error: 'Current password is incorrect' });
+    }
+
+    // Update password
+    await db.query(
+      `UPDATE users SET password_hash = crypt($1, gen_salt('bf', 10)), password_changed_at = NOW() WHERE id = $2`,
+      [newPassword, req.user.userId]
+    );
+
+    res.json({ success: true });
   } catch (error) {
-    res.json({ users: [] });
+    console.error('Password change error:', error);
+    res.status(500).json({ error: 'Failed to change password' });
   }
 });
 
-app.post('/api/auth/users/invite', authenticate, async (req, res) => {
-  res.status(501).json({ error: 'User invite disabled in demo' });
+// ============================================================
+// ORGANIZATION
+// ============================================================
+
+app.get('/api/organization', authMiddleware, async (req, res) => {
+  try {
+    const result = await db.query(
+      `SELECT * FROM organizations WHERE id = $1`,
+      [req.user.organizationId]
+    );
+    res.json({ organization: result.rows[0] });
+  } catch (error) {
+    console.error('Get organization error:', error);
+    res.status(500).json({ error: 'Failed to get organization' });
+  }
+});
+
+app.patch('/api/organization', authMiddleware, async (req, res) => {
+  try {
+    if (!['admin', 'superadmin'].includes(req.user.role)) {
+      return res.status(403).json({ error: 'Admin required' });
+    }
+
+    const { name, timezone, currency, date_format, week_starts_on, primary_color } = req.body;
+
+    const result = await db.query(
+      `UPDATE organizations 
+       SET name = COALESCE($1, name),
+           timezone = COALESCE($2, timezone),
+           currency = COALESCE($3, currency),
+           date_format = COALESCE($4, date_format),
+           week_starts_on = COALESCE($5, week_starts_on),
+           primary_color = COALESCE($6, primary_color),
+           updated_at = NOW()
+       WHERE id = $7
+       RETURNING *`,
+      [name, timezone, currency, date_format, week_starts_on, primary_color, req.user.organizationId]
+    );
+
+    res.json({ organization: result.rows[0] });
+  } catch (error) {
+    console.error('Update organization error:', error);
+    res.status(500).json({ error: 'Failed to update organization' });
+  }
 });
 
 // ============================================================
 // DASHBOARD
 // ============================================================
-app.get('/api/dashboard', authenticate, async (req, res) => {
+
+app.get('/api/dashboard', authMiddleware, async (req, res) => {
   try {
-    const orgId = req.user.organization_id;
-    
-    const [employees, shifts, locations] = await Promise.all([
-      pool.query('SELECT COUNT(*) FROM employees WHERE organization_id = $1 AND status = $2', [orgId, 'active']),
-      pool.query('SELECT COUNT(*) FROM shifts WHERE organization_id = $1 AND date >= CURRENT_DATE AND date <= CURRENT_DATE + INTERVAL \'7 days\'', [orgId]),
-      pool.query('SELECT COUNT(*) FROM locations WHERE organization_id = $1', [orgId]),
+    const orgId = req.user.organizationId;
+    const today = new Date().toISOString().split('T')[0];
+
+    const [employees, locations, shiftsToday, pendingTimeOff, openShifts] = await Promise.all([
+      db.query(`SELECT COUNT(*) FROM employees WHERE organization_id = $1 AND status = 'active'`, [orgId]),
+      db.query(`SELECT COUNT(*) FROM locations WHERE organization_id = $1 AND status = 'active'`, [orgId]),
+      db.query(`SELECT COUNT(*) FROM shifts WHERE organization_id = $1 AND date = $2`, [orgId, today]),
+      db.query(`SELECT COUNT(*) FROM time_off_requests WHERE organization_id = $1 AND status = 'pending'`, [orgId]),
+      db.query(`SELECT COUNT(*) FROM shifts WHERE organization_id = $1 AND is_open = true AND date >= $2`, [orgId, today]),
     ]);
-    
+
     res.json({
+      today: { date: today },
       activeEmployees: parseInt(employees.rows[0].count),
-      upcomingShifts: parseInt(shifts.rows[0].count),
-      locations: parseInt(locations.rows[0].count),
-      pendingTimeOff: 0
+      activeLocations: parseInt(locations.rows[0].count),
+      shiftsToday: parseInt(shiftsToday.rows[0].count),
+      pendingApprovals: { time_off: parseInt(pendingTimeOff.rows[0].count) },
+      openShifts: parseInt(openShifts.rows[0].count),
     });
   } catch (error) {
     console.error('Dashboard error:', error);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ error: 'Failed to load dashboard' });
   }
 });
 
 // ============================================================
 // EMPLOYEES
 // ============================================================
-app.get('/api/employees', authenticate, async (req, res) => {
+
+app.get('/api/employees', authMiddleware, async (req, res) => {
   try {
-    const result = await pool.query(`
-      SELECT e.*, d.name as department_name, l.name as location_name
+    const { location, department, status, search, limit = 100, offset = 0 } = req.query;
+
+    let query = `
+      SELECT e.*, 
+             l.name as location_name, 
+             d.name as department_name,
+             r.name as role_name,
+             r.hourly_rate
       FROM employees e
-      LEFT JOIN departments d ON e.department_id = d.id
-      LEFT JOIN locations l ON e.primary_location_id = l.id
+      LEFT JOIN locations l ON l.id = e.location_id
+      LEFT JOIN departments d ON d.id = e.department_id
+      LEFT JOIN roles r ON r.id = e.role_id
       WHERE e.organization_id = $1
-      ORDER BY e.first_name, e.last_name
-    `, [req.user.organization_id]);
-    res.json({ employees: result.rows });
+    `;
+    const params = [req.user.organizationId];
+    let paramIndex = 2;
+
+    if (location) {
+      query += ` AND e.location_id = $${paramIndex++}`;
+      params.push(location);
+    }
+    if (department) {
+      query += ` AND e.department_id = $${paramIndex++}`;
+      params.push(department);
+    }
+    if (status) {
+      query += ` AND e.status = $${paramIndex++}`;
+      params.push(status);
+    }
+    if (search) {
+      query += ` AND (e.first_name ILIKE $${paramIndex} OR e.last_name ILIKE $${paramIndex} OR e.email ILIKE $${paramIndex})`;
+      params.push(`%${search}%`);
+      paramIndex++;
+    }
+
+    query += ` ORDER BY e.last_name, e.first_name LIMIT $${paramIndex++} OFFSET $${paramIndex}`;
+    params.push(parseInt(limit), parseInt(offset));
+
+    const result = await db.query(query, params);
+
+    // Get total count
+    const countResult = await db.query(
+      `SELECT COUNT(*) FROM employees WHERE organization_id = $1`,
+      [req.user.organizationId]
+    );
+
+    res.json({
+      employees: result.rows,
+      total: parseInt(countResult.rows[0].count),
+    });
   } catch (error) {
-    console.error('Employees error:', error);
-    res.status(500).json({ error: 'Server error' });
+    console.error('Get employees error:', error);
+    res.status(500).json({ error: 'Failed to get employees' });
   }
 });
 
-app.get('/api/employees/:id', authenticate, async (req, res) => {
+app.get('/api/employees/:id', authMiddleware, async (req, res) => {
   try {
-    const result = await pool.query(`
-      SELECT e.*, d.name as department_name, l.name as location_name
-      FROM employees e
-      LEFT JOIN departments d ON e.department_id = d.id
-      LEFT JOIN locations l ON e.primary_location_id = l.id
-      WHERE e.id = $1 AND e.organization_id = $2
-    `, [req.params.id, req.user.organization_id]);
-    
+    const result = await db.query(
+      `SELECT e.*, 
+              l.name as location_name, 
+              d.name as department_name,
+              r.name as role_name,
+              r.hourly_rate
+       FROM employees e
+       LEFT JOIN locations l ON l.id = e.location_id
+       LEFT JOIN departments d ON d.id = e.department_id
+       LEFT JOIN roles r ON r.id = e.role_id
+       WHERE e.id = $1 AND e.organization_id = $2`,
+      [req.params.id, req.user.organizationId]
+    );
+
     if (!result.rows[0]) {
       return res.status(404).json({ error: 'Employee not found' });
     }
-    res.json({ employee: result.rows[0] });
+
+    // Get skills
+    const skills = await db.query(
+      `SELECT s.*, es.proficiency, es.verified
+       FROM employee_skills es
+       JOIN skills s ON s.id = es.skill_id
+       WHERE es.employee_id = $1`,
+      [req.params.id]
+    );
+
+    res.json({
+      employee: {
+        ...result.rows[0],
+        skills: skills.rows,
+      },
+    });
   } catch (error) {
-    res.status(500).json({ error: 'Server error' });
+    console.error('Get employee error:', error);
+    res.status(500).json({ error: 'Failed to get employee' });
   }
 });
 
-app.post('/api/employees', authenticate, async (req, res) => {
+app.post('/api/employees', authMiddleware, async (req, res) => {
   try {
-    const { firstName, lastName, email, departmentId, locationId, employmentType, hourlyRate } = req.body;
-    const result = await pool.query(`
-      INSERT INTO employees (organization_id, first_name, last_name, email, department_id, primary_location_id, employment_type, hourly_rate, status)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active')
-      RETURNING *
-    `, [req.user.organization_id, firstName, lastName, email, departmentId, locationId, employmentType || 'full_time', hourlyRate || 15]);
+    const { firstName, lastName, email, phone, locationId, departmentId, roleId, employmentType } = req.body;
+
+    const result = await db.query(
+      `INSERT INTO employees (organization_id, first_name, last_name, email, phone, location_id, department_id, role_id, employment_type, status, hire_date)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'active', CURRENT_DATE)
+       RETURNING *`,
+      [req.user.organizationId, firstName, lastName, email, phone, locationId, departmentId, roleId, employmentType || 'full-time']
+    );
+
     res.status(201).json({ employee: result.rows[0] });
   } catch (error) {
-    console.error('Employee create error:', error);
-    res.status(500).json({ error: 'Server error' });
+    console.error('Create employee error:', error);
+    res.status(500).json({ error: 'Failed to create employee' });
   }
 });
 
-app.patch('/api/employees/:id', authenticate, async (req, res) => {
+app.patch('/api/employees/:id', authMiddleware, async (req, res) => {
   try {
-    const { firstName, lastName, email, departmentId, locationId, status, employmentType, hourlyRate } = req.body;
-    const result = await pool.query(`
-      UPDATE employees SET
-        first_name = COALESCE($1, first_name),
-        last_name = COALESCE($2, last_name),
-        email = COALESCE($3, email),
-        department_id = COALESCE($4, department_id),
-        primary_location_id = COALESCE($5, primary_location_id),
-        status = COALESCE($6, status),
-        employment_type = COALESCE($7, employment_type),
-        hourly_rate = COALESCE($8, hourly_rate),
-        updated_at = NOW()
-      WHERE id = $9 AND organization_id = $10
-      RETURNING *
-    `, [firstName, lastName, email, departmentId, locationId, status, employmentType, hourlyRate, req.params.id, req.user.organization_id]);
-    
-    if (!result.rows[0]) return res.status(404).json({ error: 'Employee not found' });
+    const { firstName, lastName, email, phone, locationId, departmentId, roleId, employmentType, status } = req.body;
+
+    const result = await db.query(
+      `UPDATE employees 
+       SET first_name = COALESCE($1, first_name),
+           last_name = COALESCE($2, last_name),
+           email = COALESCE($3, email),
+           phone = COALESCE($4, phone),
+           location_id = COALESCE($5, location_id),
+           department_id = COALESCE($6, department_id),
+           role_id = COALESCE($7, role_id),
+           employment_type = COALESCE($8, employment_type),
+           status = COALESCE($9, status),
+           updated_at = NOW()
+       WHERE id = $10 AND organization_id = $11
+       RETURNING *`,
+      [firstName, lastName, email, phone, locationId, departmentId, roleId, employmentType, status, req.params.id, req.user.organizationId]
+    );
+
+    if (!result.rows[0]) {
+      return res.status(404).json({ error: 'Employee not found' });
+    }
+
     res.json({ employee: result.rows[0] });
   } catch (error) {
-    res.status(500).json({ error: 'Server error' });
+    console.error('Update employee error:', error);
+    res.status(500).json({ error: 'Failed to update employee' });
   }
-});
-
-app.delete('/api/employees/:id', authenticate, async (req, res) => {
-  try {
-    const result = await pool.query(
-      'DELETE FROM employees WHERE id = $1 AND organization_id = $2 RETURNING id',
-      [req.params.id, req.user.organization_id]
-    );
-    if (!result.rows[0]) return res.status(404).json({ error: 'Employee not found' });
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-app.post('/api/employees/:id/skills', authenticate, async (req, res) => {
-  res.json({ success: true });
-});
-
-app.post('/api/employees/:employeeId/skills/:skillId/verify', authenticate, async (req, res) => {
-  res.json({ success: true });
 });
 
 // ============================================================
 // LOCATIONS
 // ============================================================
-app.get('/api/locations', authenticate, async (req, res) => {
+
+app.get('/api/locations', authMiddleware, async (req, res) => {
   try {
-    const result = await pool.query(
-      'SELECT * FROM locations WHERE organization_id = $1 ORDER BY name',
-      [req.user.organization_id]
+    const result = await db.query(
+      `SELECT l.*, 
+              (SELECT COUNT(*) FROM employees e WHERE e.location_id = l.id AND e.status = 'active') as employee_count
+       FROM locations l 
+       WHERE l.organization_id = $1 
+       ORDER BY l.name`,
+      [req.user.organizationId]
     );
     res.json({ locations: result.rows });
   } catch (error) {
-    res.status(500).json({ error: 'Server error' });
+    console.error('Get locations error:', error);
+    res.status(500).json({ error: 'Failed to get locations' });
   }
 });
 
-app.get('/api/locations/:id', authenticate, async (req, res) => {
+app.post('/api/locations', authMiddleware, async (req, res) => {
   try {
-    const result = await pool.query(
-      'SELECT * FROM locations WHERE id = $1 AND organization_id = $2',
-      [req.params.id, req.user.organization_id]
+    const { name, code, type, addressLine1, city, postcode, country, timezone } = req.body;
+
+    const result = await db.query(
+      `INSERT INTO locations (organization_id, name, code, type, address_line1, city, postcode, country, timezone, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'active')
+       RETURNING *`,
+      [req.user.organizationId, name, code, type || 'office', addressLine1, city, postcode, country || 'GB', timezone || 'Europe/London']
     );
-    if (!result.rows[0]) return res.status(404).json({ error: 'Location not found' });
-    res.json({ location: result.rows[0] });
-  } catch (error) {
-    res.status(500).json({ error: 'Server error' });
-  }
-});
 
-app.post('/api/locations', authenticate, async (req, res) => {
-  try {
-    const { name, address, city, country } = req.body;
-    const result = await pool.query(`
-      INSERT INTO locations (organization_id, name, address, city, country, status)
-      VALUES ($1, $2, $3, $4, $5, 'active')
-      RETURNING *
-    `, [req.user.organization_id, name, address, city, country]);
     res.status(201).json({ location: result.rows[0] });
   } catch (error) {
-    res.status(500).json({ error: 'Server error' });
+    console.error('Create location error:', error);
+    res.status(500).json({ error: 'Failed to create location' });
   }
 });
 
-app.patch('/api/locations/:id', authenticate, async (req, res) => {
+app.patch('/api/locations/:id', authMiddleware, async (req, res) => {
   try {
-    const { name, address, city, country, status } = req.body;
-    const result = await pool.query(`
-      UPDATE locations SET
-        name = COALESCE($1, name),
-        address = COALESCE($2, address),
-        city = COALESCE($3, city),
-        country = COALESCE($4, country),
-        status = COALESCE($5, status),
-        updated_at = NOW()
-      WHERE id = $6 AND organization_id = $7
-      RETURNING *
-    `, [name, address, city, country, status, req.params.id, req.user.organization_id]);
-    if (!result.rows[0]) return res.status(404).json({ error: 'Location not found' });
+    const { name, code, type, addressLine1, city, postcode, country, timezone, status } = req.body;
+
+    const result = await db.query(
+      `UPDATE locations 
+       SET name = COALESCE($1, name),
+           code = COALESCE($2, code),
+           type = COALESCE($3, type),
+           address_line1 = COALESCE($4, address_line1),
+           city = COALESCE($5, city),
+           postcode = COALESCE($6, postcode),
+           country = COALESCE($7, country),
+           timezone = COALESCE($8, timezone),
+           status = COALESCE($9, status),
+           updated_at = NOW()
+       WHERE id = $10 AND organization_id = $11
+       RETURNING *`,
+      [name, code, type, addressLine1, city, postcode, country, timezone, status, req.params.id, req.user.organizationId]
+    );
+
     res.json({ location: result.rows[0] });
   } catch (error) {
-    res.status(500).json({ error: 'Server error' });
+    console.error('Update location error:', error);
+    res.status(500).json({ error: 'Failed to update location' });
   }
 });
 
 // ============================================================
 // DEPARTMENTS
 // ============================================================
-app.get('/api/departments', authenticate, async (req, res) => {
+
+app.get('/api/departments', authMiddleware, async (req, res) => {
   try {
-    const result = await pool.query(
-      'SELECT * FROM departments WHERE organization_id = $1 ORDER BY name',
-      [req.user.organization_id]
+    const result = await db.query(
+      `SELECT d.*, 
+              (SELECT COUNT(*) FROM employees e WHERE e.department_id = d.id AND e.status = 'active') as employee_count
+       FROM departments d 
+       WHERE d.organization_id = $1 
+       ORDER BY d.name`,
+      [req.user.organizationId]
     );
     res.json({ departments: result.rows });
   } catch (error) {
-    res.status(500).json({ error: 'Server error' });
+    console.error('Get departments error:', error);
+    res.status(500).json({ error: 'Failed to get departments' });
   }
 });
 
-app.post('/api/departments', authenticate, async (req, res) => {
+app.post('/api/departments', authMiddleware, async (req, res) => {
   try {
-    const { name } = req.body;
-    const result = await pool.query(
-      'INSERT INTO departments (organization_id, name) VALUES ($1, $2) RETURNING *',
-      [req.user.organization_id, name]
+    const { name, code } = req.body;
+
+    const result = await db.query(
+      `INSERT INTO departments (organization_id, name, code)
+       VALUES ($1, $2, $3)
+       RETURNING *`,
+      [req.user.organizationId, name, code]
     );
+
     res.status(201).json({ department: result.rows[0] });
   } catch (error) {
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-app.patch('/api/departments/:id', authenticate, async (req, res) => {
-  try {
-    const { name } = req.body;
-    const result = await pool.query(
-      'UPDATE departments SET name = $1, updated_at = NOW() WHERE id = $2 AND organization_id = $3 RETURNING *',
-      [name, req.params.id, req.user.organization_id]
-    );
-    if (!result.rows[0]) return res.status(404).json({ error: 'Department not found' });
-    res.json({ department: result.rows[0] });
-  } catch (error) {
-    res.status(500).json({ error: 'Server error' });
+    console.error('Create department error:', error);
+    res.status(500).json({ error: 'Failed to create department' });
   }
 });
 
 // ============================================================
 // ROLES
 // ============================================================
-app.get('/api/roles', authenticate, async (req, res) => {
-  res.json({ roles: [
-    { id: 'admin', name: 'Administrator' },
-    { id: 'manager', name: 'Manager' },
-    { id: 'worker', name: 'Worker' }
-  ]});
+
+app.get('/api/roles', authMiddleware, async (req, res) => {
+  try {
+    const result = await db.query(
+      `SELECT * FROM roles WHERE organization_id = $1 ORDER BY name`,
+      [req.user.organizationId]
+    );
+    res.json({ roles: result.rows });
+  } catch (error) {
+    console.error('Get roles error:', error);
+    res.status(500).json({ error: 'Failed to get roles' });
+  }
 });
 
-app.post('/api/roles', authenticate, async (req, res) => {
-  res.status(501).json({ error: 'Custom roles not available in demo' });
+app.post('/api/roles', authMiddleware, async (req, res) => {
+  try {
+    const { name, hourlyRate } = req.body;
+
+    const result = await db.query(
+      `INSERT INTO roles (organization_id, name, hourly_rate)
+       VALUES ($1, $2, $3)
+       RETURNING *`,
+      [req.user.organizationId, name, hourlyRate]
+    );
+
+    res.status(201).json({ role: result.rows[0] });
+  } catch (error) {
+    console.error('Create role error:', error);
+    res.status(500).json({ error: 'Failed to create role' });
+  }
 });
 
 // ============================================================
 // SKILLS
 // ============================================================
-app.get('/api/skills', authenticate, async (req, res) => {
+
+app.get('/api/skills', authMiddleware, async (req, res) => {
   try {
-    const result = await pool.query(
-      'SELECT * FROM skills WHERE organization_id = $1 ORDER BY name',
-      [req.user.organization_id]
+    const result = await db.query(
+      `SELECT s.*, 
+              (SELECT COUNT(*) FROM employee_skills es WHERE es.skill_id = s.id) as employee_count
+       FROM skills s 
+       WHERE s.organization_id = $1 
+       ORDER BY s.category, s.name`,
+      [req.user.organizationId]
     );
     res.json({ skills: result.rows });
   } catch (error) {
-    res.status(500).json({ error: 'Server error' });
+    console.error('Get skills error:', error);
+    res.status(500).json({ error: 'Failed to get skills' });
   }
 });
 
-app.post('/api/skills', authenticate, async (req, res) => {
+app.post('/api/skills', authMiddleware, async (req, res) => {
   try {
     const { name, category } = req.body;
-    const result = await pool.query(
-      'INSERT INTO skills (organization_id, name, category) VALUES ($1, $2, $3) RETURNING *',
-      [req.user.organization_id, name, category]
+
+    const result = await db.query(
+      `INSERT INTO skills (organization_id, name, category)
+       VALUES ($1, $2, $3)
+       RETURNING *`,
+      [req.user.organizationId, name, category || 'technical']
     );
+
     res.status(201).json({ skill: result.rows[0] });
   } catch (error) {
-    res.status(500).json({ error: 'Server error' });
+    console.error('Create skill error:', error);
+    res.status(500).json({ error: 'Failed to create skill' });
   }
 });
 
 // ============================================================
 // SHIFTS
 // ============================================================
-app.get('/api/shifts', authenticate, async (req, res) => {
+
+app.get('/api/shifts', authMiddleware, async (req, res) => {
   try {
-    const { startDate, endDate, locationId, employeeId } = req.query;
+    const { start, end, location, department, employee } = req.query;
+
     let query = `
-      SELECT s.*, e.first_name as employee_first_name, e.last_name as employee_last_name, l.name as location_name
+      SELECT s.*, 
+             e.first_name as employee_first_name, 
+             e.last_name as employee_last_name,
+             l.name as location_name,
+             d.name as department_name
       FROM shifts s
-      LEFT JOIN employees e ON s.employee_id = e.id
-      LEFT JOIN locations l ON s.location_id = l.id
+      LEFT JOIN employees e ON e.id = s.employee_id
+      LEFT JOIN locations l ON l.id = s.location_id
+      LEFT JOIN departments d ON d.id = s.department_id
       WHERE s.organization_id = $1
     `;
-    const params = [req.user.organization_id];
-    let idx = 2;
-    
-    if (startDate) { query += ` AND s.date >= $${idx}`; params.push(startDate); idx++; }
-    if (endDate) { query += ` AND s.date <= $${idx}`; params.push(endDate); idx++; }
-    if (locationId) { query += ` AND s.location_id = $${idx}`; params.push(locationId); idx++; }
-    if (employeeId) { query += ` AND s.employee_id = $${idx}`; params.push(employeeId); }
-    
-    query += ' ORDER BY s.date, s.start_time';
-    const result = await pool.query(query, params);
+    const params = [req.user.organizationId];
+    let paramIndex = 2;
+
+    if (start) {
+      query += ` AND s.date >= $${paramIndex++}`;
+      params.push(start);
+    }
+    if (end) {
+      query += ` AND s.date <= $${paramIndex++}`;
+      params.push(end);
+    }
+    if (location) {
+      query += ` AND s.location_id = $${paramIndex++}`;
+      params.push(location);
+    }
+    if (department) {
+      query += ` AND s.department_id = $${paramIndex++}`;
+      params.push(department);
+    }
+    if (employee) {
+      query += ` AND s.employee_id = $${paramIndex++}`;
+      params.push(employee);
+    }
+
+    query += ` ORDER BY s.date, s.start_time`;
+
+    const result = await db.query(query, params);
     res.json({ shifts: result.rows });
   } catch (error) {
-    console.error('Shifts error:', error);
-    res.status(500).json({ error: 'Server error' });
+    console.error('Get shifts error:', error);
+    res.status(500).json({ error: 'Failed to get shifts' });
   }
 });
 
-app.get('/api/shifts/:id', authenticate, async (req, res) => {
+app.post('/api/shifts', authMiddleware, async (req, res) => {
   try {
-    const result = await pool.query(
-      'SELECT * FROM shifts WHERE id = $1 AND organization_id = $2',
-      [req.params.id, req.user.organization_id]
+    const { employeeId, locationId, departmentId, date, startTime, endTime } = req.body;
+
+    const result = await db.query(
+      `INSERT INTO shifts (organization_id, employee_id, location_id, department_id, date, start_time, end_time, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'scheduled')
+       RETURNING *`,
+      [req.user.organizationId, employeeId, locationId, departmentId, date, startTime, endTime]
     );
-    if (!result.rows[0]) return res.status(404).json({ error: 'Shift not found' });
-    res.json({ shift: result.rows[0] });
-  } catch (error) {
-    res.status(500).json({ error: 'Server error' });
-  }
-});
 
-app.post('/api/shifts', authenticate, async (req, res) => {
-  try {
-    const { employeeId, locationId, date, startTime, endTime, breakMinutes } = req.body;
-    const result = await pool.query(`
-      INSERT INTO shifts (organization_id, employee_id, location_id, date, start_time, end_time, break_minutes, status, published)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, 'scheduled', true)
-      RETURNING *
-    `, [req.user.organization_id, employeeId, locationId, date, startTime, endTime, breakMinutes || 30]);
     res.status(201).json({ shift: result.rows[0] });
   } catch (error) {
-    console.error('Shift create error:', error);
-    res.status(500).json({ error: 'Server error' });
+    console.error('Create shift error:', error);
+    res.status(500).json({ error: 'Failed to create shift' });
   }
 });
 
-app.post('/api/shifts/bulk', authenticate, async (req, res) => {
+app.patch('/api/shifts/:id', authMiddleware, async (req, res) => {
   try {
-    const { shifts } = req.body;
-    const created = [];
-    for (const shift of shifts) {
-      const result = await pool.query(`
-        INSERT INTO shifts (organization_id, employee_id, location_id, date, start_time, end_time, break_minutes, status, published)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, 'scheduled', true)
-        RETURNING *
-      `, [req.user.organization_id, shift.employeeId, shift.locationId, shift.date, shift.startTime, shift.endTime, shift.breakMinutes || 30]);
-      created.push(result.rows[0]);
-    }
-    res.status(201).json({ shifts: created });
-  } catch (error) {
-    res.status(500).json({ error: 'Server error' });
-  }
-});
+    const { employeeId, date, startTime, endTime, status } = req.body;
 
-app.patch('/api/shifts/:id', authenticate, async (req, res) => {
-  try {
-    const { employeeId, locationId, date, startTime, endTime, status } = req.body;
-    const result = await pool.query(`
-      UPDATE shifts SET
-        employee_id = COALESCE($1, employee_id),
-        location_id = COALESCE($2, location_id),
-        date = COALESCE($3, date),
-        start_time = COALESCE($4, start_time),
-        end_time = COALESCE($5, end_time),
-        status = COALESCE($6, status),
-        updated_at = NOW()
-      WHERE id = $7 AND organization_id = $8
-      RETURNING *
-    `, [employeeId, locationId, date, startTime, endTime, status, req.params.id, req.user.organization_id]);
-    if (!result.rows[0]) return res.status(404).json({ error: 'Shift not found' });
+    const result = await db.query(
+      `UPDATE shifts 
+       SET employee_id = COALESCE($1, employee_id),
+           date = COALESCE($2, date),
+           start_time = COALESCE($3, start_time),
+           end_time = COALESCE($4, end_time),
+           status = COALESCE($5, status),
+           updated_at = NOW()
+       WHERE id = $6 AND organization_id = $7
+       RETURNING *`,
+      [employeeId, date, startTime, endTime, status, req.params.id, req.user.organizationId]
+    );
+
     res.json({ shift: result.rows[0] });
   } catch (error) {
-    res.status(500).json({ error: 'Server error' });
+    console.error('Update shift error:', error);
+    res.status(500).json({ error: 'Failed to update shift' });
   }
 });
 
-app.delete('/api/shifts/:id', authenticate, async (req, res) => {
+app.delete('/api/shifts/:id', authMiddleware, async (req, res) => {
   try {
-    const result = await pool.query(
-      'DELETE FROM shifts WHERE id = $1 AND organization_id = $2 RETURNING id',
-      [req.params.id, req.user.organization_id]
+    await db.query(
+      `DELETE FROM shifts WHERE id = $1 AND organization_id = $2`,
+      [req.params.id, req.user.organizationId]
     );
-    if (!result.rows[0]) return res.status(404).json({ error: 'Shift not found' });
     res.json({ success: true });
   } catch (error) {
-    res.status(500).json({ error: 'Server error' });
+    console.error('Delete shift error:', error);
+    res.status(500).json({ error: 'Failed to delete shift' });
   }
-});
-
-app.post('/api/shifts/:id/assign', authenticate, async (req, res) => {
-  try {
-    const { employeeId } = req.body;
-    const result = await pool.query(
-      'UPDATE shifts SET employee_id = $1, updated_at = NOW() WHERE id = $2 AND organization_id = $3 RETURNING *',
-      [employeeId, req.params.id, req.user.organization_id]
-    );
-    if (!result.rows[0]) return res.status(404).json({ error: 'Shift not found' });
-    res.json({ shift: result.rows[0] });
-  } catch (error) {
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-app.get('/api/shifts/swaps', authenticate, async (req, res) => {
-  res.json({ swaps: [] });
-});
-
-app.post('/api/shifts/swaps/:id/approve', authenticate, async (req, res) => {
-  res.json({ success: true });
-});
-
-app.post('/api/shifts/swaps/:id/reject', authenticate, async (req, res) => {
-  res.json({ success: true });
-});
-
-// ============================================================
-// SHIFT TEMPLATES
-// ============================================================
-app.get('/api/shift-templates', authenticate, async (req, res) => {
-  res.json({ templates: [] });
-});
-
-app.post('/api/shift-templates', authenticate, async (req, res) => {
-  res.status(501).json({ error: 'Templates not available in demo' });
-});
-
-app.post('/api/shift-templates/:id/generate', authenticate, async (req, res) => {
-  res.status(501).json({ error: 'Templates not available in demo' });
-});
-
-// ============================================================
-// SCHEDULE PERIODS
-// ============================================================
-app.get('/api/schedule/periods', authenticate, async (req, res) => {
-  res.json({ periods: [] });
-});
-
-app.post('/api/schedule/periods', authenticate, async (req, res) => {
-  res.status(501).json({ error: 'Schedule periods not available in demo' });
-});
-
-app.post('/api/schedule/periods/:id/publish', authenticate, async (req, res) => {
-  res.json({ success: true });
-});
-
-// ============================================================
-// TIME TRACKING
-// ============================================================
-app.get('/api/time/entries', authenticate, async (req, res) => {
-  res.json({ entries: [] });
-});
-
-app.get('/api/time/pending', authenticate, async (req, res) => {
-  res.json({ entries: [] });
-});
-
-app.post('/api/time/entries/:id/approve', authenticate, async (req, res) => {
-  res.json({ success: true });
-});
-
-app.post('/api/time/entries/:id/reject', authenticate, async (req, res) => {
-  res.json({ success: true });
-});
-
-app.post('/api/time/entries/bulk-approve', authenticate, async (req, res) => {
-  res.json({ success: true });
-});
-
-app.patch('/api/time/entries/:id', authenticate, async (req, res) => {
-  res.json({ success: true });
 });
 
 // ============================================================
 // TIME OFF
 // ============================================================
-app.get('/api/time-off/policies', authenticate, async (req, res) => {
-  res.json({ policies: [
-    { id: '1', name: 'Annual Leave', daysPerYear: 28 },
-    { id: '2', name: 'Sick Leave', daysPerYear: 10 }
-  ]});
-});
 
-app.post('/api/time-off/policies', authenticate, async (req, res) => {
-  res.status(501).json({ error: 'Policy creation not available in demo' });
-});
-
-app.get('/api/time-off/requests', authenticate, async (req, res) => {
-  res.json({ requests: [] });
-});
-
-app.post('/api/time-off/requests/:id/approve', authenticate, async (req, res) => {
-  res.json({ success: true });
-});
-
-app.post('/api/time-off/requests/:id/reject', authenticate, async (req, res) => {
-  res.json({ success: true });
-});
-
-app.get('/api/time-off/balances', authenticate, async (req, res) => {
-  res.json({ balances: [
-    { policyId: '1', policyName: 'Annual Leave', total: 28, used: 5, remaining: 23 },
-    { policyId: '2', policyName: 'Sick Leave', total: 10, used: 2, remaining: 8 }
-  ]});
-});
-
-// ============================================================
-// ORGANIZATION
-// ============================================================
-app.get('/api/organization', authenticate, async (req, res) => {
+app.get('/api/time-off/policies', authMiddleware, async (req, res) => {
   try {
-    const result = await pool.query(
-      'SELECT * FROM organizations WHERE id = $1',
-      [req.user.organization_id]
+    const result = await db.query(
+      `SELECT * FROM time_off_policies WHERE organization_id = $1 ORDER BY name`,
+      [req.user.organizationId]
     );
-    res.json({ organization: result.rows[0] || {} });
+    res.json({ policies: result.rows });
   } catch (error) {
-    res.status(500).json({ error: 'Server error' });
+    console.error('Get policies error:', error);
+    res.status(500).json({ error: 'Failed to get policies' });
   }
 });
 
-app.patch('/api/organization', authenticate, async (req, res) => {
-  res.status(501).json({ error: 'Organization update not available in demo' });
+app.get('/api/time-off/requests', authMiddleware, async (req, res) => {
+  try {
+    const { status, employee } = req.query;
+
+    let query = `
+      SELECT tor.*, 
+             e.first_name as employee_first_name, 
+             e.last_name as employee_last_name,
+             top.name as policy_name
+      FROM time_off_requests tor
+      JOIN employees e ON e.id = tor.employee_id
+      JOIN time_off_policies top ON top.id = tor.policy_id
+      WHERE tor.organization_id = $1
+    `;
+    const params = [req.user.organizationId];
+    let paramIndex = 2;
+
+    if (status) {
+      query += ` AND tor.status = $${paramIndex++}`;
+      params.push(status);
+    }
+    if (employee) {
+      query += ` AND tor.employee_id = $${paramIndex++}`;
+      params.push(employee);
+    }
+
+    query += ` ORDER BY tor.start_date DESC`;
+
+    const result = await db.query(query, params);
+    res.json({ requests: result.rows });
+  } catch (error) {
+    console.error('Get time off requests error:', error);
+    res.status(500).json({ error: 'Failed to get requests' });
+  }
+});
+
+app.post('/api/time-off/requests/:id/approve', authMiddleware, async (req, res) => {
+  try {
+    const result = await db.query(
+      `UPDATE time_off_requests 
+       SET status = 'approved', reviewed_by = $1, reviewed_at = NOW()
+       WHERE id = $2 AND organization_id = $3
+       RETURNING *`,
+      [req.user.userId, req.params.id, req.user.organizationId]
+    );
+    res.json({ request: result.rows[0] });
+  } catch (error) {
+    console.error('Approve request error:', error);
+    res.status(500).json({ error: 'Failed to approve request' });
+  }
+});
+
+app.post('/api/time-off/requests/:id/reject', authMiddleware, async (req, res) => {
+  try {
+    const { notes } = req.body;
+    const result = await db.query(
+      `UPDATE time_off_requests 
+       SET status = 'rejected', reviewed_by = $1, reviewed_at = NOW(), review_notes = $2
+       WHERE id = $3 AND organization_id = $4
+       RETURNING *`,
+      [req.user.userId, notes, req.params.id, req.user.organizationId]
+    );
+    res.json({ request: result.rows[0] });
+  } catch (error) {
+    console.error('Reject request error:', error);
+    res.status(500).json({ error: 'Failed to reject request' });
+  }
 });
 
 // ============================================================
-// REPORTS
+// TIME TRACKING
 // ============================================================
-app.get('/api/reports/hours', authenticate, async (req, res) => {
-  res.json({ data: [], summary: { totalHours: 0, totalCost: 0 } });
+
+app.get('/api/time/entries', authMiddleware, async (req, res) => {
+  try {
+    const { start, end, employee, status } = req.query;
+
+    let query = `
+      SELECT te.*, 
+             e.first_name as employee_first_name, 
+             e.last_name as employee_last_name
+      FROM time_entries te
+      JOIN employees e ON e.id = te.employee_id
+      WHERE te.organization_id = $1
+    `;
+    const params = [req.user.organizationId];
+    let paramIndex = 2;
+
+    if (start) {
+      query += ` AND te.clock_in >= $${paramIndex++}`;
+      params.push(start);
+    }
+    if (end) {
+      query += ` AND te.clock_in <= $${paramIndex++}`;
+      params.push(end);
+    }
+    if (employee) {
+      query += ` AND te.employee_id = $${paramIndex++}`;
+      params.push(employee);
+    }
+    if (status) {
+      query += ` AND te.status = $${paramIndex++}`;
+      params.push(status);
+    }
+
+    query += ` ORDER BY te.clock_in DESC`;
+
+    const result = await db.query(query, params);
+    res.json({ entries: result.rows });
+  } catch (error) {
+    console.error('Get time entries error:', error);
+    res.status(500).json({ error: 'Failed to get entries' });
+  }
 });
 
-app.get('/api/reports/attendance', authenticate, async (req, res) => {
-  res.json({ data: [], summary: { attendanceRate: 95 } });
+// ============================================================
+// JOBS (Internal Mobility)
+// ============================================================
+
+app.get('/api/jobs', authMiddleware, async (req, res) => {
+  try {
+    const { status } = req.query;
+
+    let query = `
+      SELECT jp.*, 
+             l.name as location_name,
+             d.name as department_name,
+             (SELECT COUNT(*) FROM job_applications ja WHERE ja.job_posting_id = jp.id) as application_count
+      FROM job_postings jp
+      LEFT JOIN locations l ON l.id = jp.location_id
+      LEFT JOIN departments d ON d.id = jp.department_id
+      WHERE jp.organization_id = $1
+    `;
+    const params = [req.user.organizationId];
+
+    if (status) {
+      query += ` AND jp.status = $2`;
+      params.push(status);
+    }
+
+    query += ` ORDER BY jp.posted_at DESC`;
+
+    const result = await db.query(query, params);
+    res.json({ jobs: result.rows });
+  } catch (error) {
+    console.error('Get jobs error:', error);
+    res.status(500).json({ error: 'Failed to get jobs' });
+  }
 });
 
-app.get('/api/reports/labor-cost', authenticate, async (req, res) => {
-  res.json({ data: [], summary: { totalCost: 0 } });
+app.get('/api/jobs/:id', authMiddleware, async (req, res) => {
+  try {
+    const result = await db.query(
+      `SELECT jp.*, 
+              l.name as location_name,
+              d.name as department_name
+       FROM job_postings jp
+       LEFT JOIN locations l ON l.id = jp.location_id
+       LEFT JOIN departments d ON d.id = jp.department_id
+       WHERE jp.id = $1 AND jp.organization_id = $2`,
+      [req.params.id, req.user.organizationId]
+    );
+
+    if (!result.rows[0]) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
+    res.json({ job: result.rows[0] });
+  } catch (error) {
+    console.error('Get job error:', error);
+    res.status(500).json({ error: 'Failed to get job' });
+  }
 });
 
-app.get('/api/reports/coverage', authenticate, async (req, res) => {
-  res.json({ data: [], summary: { coverageRate: 100 } });
+// ============================================================
+// USERS (Admin)
+// ============================================================
+
+app.get('/api/users', authMiddleware, async (req, res) => {
+  try {
+    if (!['admin', 'superadmin'].includes(req.user.role)) {
+      return res.status(403).json({ error: 'Admin required' });
+    }
+
+    const result = await db.query(
+      `SELECT id, email, first_name, last_name, role, status, last_login_at, created_at
+       FROM users 
+       WHERE organization_id = $1
+       ORDER BY last_name, first_name`,
+      [req.user.organizationId]
+    );
+
+    res.json({ users: result.rows });
+  } catch (error) {
+    console.error('Get users error:', error);
+    res.status(500).json({ error: 'Failed to get users' });
+  }
 });
 
-app.get('/api/exports/timesheets', authenticate, async (req, res) => {
-  res.status(501).json({ error: 'Export not available in demo' });
+app.patch('/api/users/me', authMiddleware, async (req, res) => {
+  try {
+    const { firstName, lastName, phone } = req.body;
+
+    const result = await db.query(
+      `UPDATE users 
+       SET first_name = COALESCE($1, first_name),
+           last_name = COALESCE($2, last_name),
+           phone = COALESCE($3, phone),
+           updated_at = NOW()
+       WHERE id = $4
+       RETURNING id, email, first_name, last_name, phone, role`,
+      [firstName, lastName, phone, req.user.userId]
+    );
+
+    res.json({ user: result.rows[0] });
+  } catch (error) {
+    console.error('Update user error:', error);
+    res.status(500).json({ error: 'Failed to update user' });
+  }
 });
 
-app.get('/api/exports/employees', authenticate, async (req, res) => {
-  res.status(501).json({ error: 'Export not available in demo' });
+// ============================================================
+// SHIFT TEMPLATES
+// ============================================================
+
+app.get('/api/shift-templates', authMiddleware, async (req, res) => {
+  try {
+    // For now, return empty - templates need a table
+    res.json({ templates: [] });
+  } catch (error) {
+    console.error('Get templates error:', error);
+    res.status(500).json({ error: 'Failed to get templates' });
+  }
 });
 
 // ============================================================
 // NOTIFICATIONS
 // ============================================================
-app.get('/api/notifications', authenticate, async (req, res) => {
-  res.json({ notifications: [] });
+
+app.get('/api/notifications', authMiddleware, async (req, res) => {
+  try {
+    const result = await db.query(
+      `SELECT * FROM notifications 
+       WHERE user_id = $1 
+       ORDER BY created_at DESC 
+       LIMIT 50`,
+      [req.user.userId]
+    );
+    res.json({ 
+      notifications: result.rows,
+      unreadCount: result.rows.filter(n => !n.read).length,
+    });
+  } catch (error) {
+    console.error('Get notifications error:', error);
+    res.json({ notifications: [], unreadCount: 0 });
+  }
 });
 
-app.post('/api/notifications/:id/read', authenticate, async (req, res) => {
-  res.json({ success: true });
+// ============================================================
+// INTEGRATIONS (API Factory)
+// ============================================================
+
+app.get('/api/integrations', authMiddleware, async (req, res) => {
+  try {
+    // Return sample integrations for demo
+    res.json({
+      integrations: [
+        { id: '1', name: 'ADP Workforce', type: 'hris', status: 'available', description: 'Sync employee data with ADP' },
+        { id: '2', name: 'Workday', type: 'hris', status: 'available', description: 'Bidirectional sync with Workday HCM' },
+        { id: '3', name: 'BambooHR', type: 'hris', status: 'available', description: 'Import employees from BambooHR' },
+        { id: '4', name: 'SAP SuccessFactors', type: 'hris', status: 'available', description: 'Enterprise HR integration' },
+        { id: '5', name: 'Slack', type: 'notification', status: 'available', description: 'Send shift notifications to Slack' },
+        { id: '6', name: 'Microsoft Teams', type: 'notification', status: 'available', description: 'Teams integration for alerts' },
+      ],
+    });
+  } catch (error) {
+    console.error('Get integrations error:', error);
+    res.status(500).json({ error: 'Failed to get integrations' });
+  }
 });
 
-app.post('/api/notifications/read-all', authenticate, async (req, res) => {
-  res.json({ success: true });
+app.get('/api/integrations/api-keys', authMiddleware, async (req, res) => {
+  try {
+    // Return sample API keys for demo
+    res.json({
+      apiKeys: [
+        { id: '1', name: 'Production Key', prefix: 'uplift_live_', created_at: '2025-01-01', last_used: '2025-01-20' },
+        { id: '2', name: 'Development Key', prefix: 'uplift_test_', created_at: '2025-01-15', last_used: null },
+      ],
+    });
+  } catch (error) {
+    console.error('Get API keys error:', error);
+    res.status(500).json({ error: 'Failed to get API keys' });
+  }
+});
+
+// ============================================================
+// REPORTS
+// ============================================================
+
+app.get('/api/reports/hours', authMiddleware, async (req, res) => {
+  try {
+    const { start, end } = req.query;
+
+    const result = await db.query(
+      `SELECT 
+         e.id as employee_id,
+         e.first_name,
+         e.last_name,
+         l.name as location_name,
+         SUM(te.total_hours) as total_hours,
+         SUM(te.regular_hours) as regular_hours,
+         SUM(te.overtime_hours) as overtime_hours
+       FROM time_entries te
+       JOIN employees e ON e.id = te.employee_id
+       LEFT JOIN locations l ON l.id = e.location_id
+       WHERE te.organization_id = $1
+         AND te.clock_in >= COALESCE($2, CURRENT_DATE - INTERVAL '30 days')
+         AND te.clock_in <= COALESCE($3, CURRENT_DATE)
+       GROUP BY e.id, e.first_name, e.last_name, l.name
+       ORDER BY total_hours DESC`,
+      [req.user.organizationId, start, end]
+    );
+
+    res.json({ data: result.rows });
+  } catch (error) {
+    console.error('Get hours report error:', error);
+    res.status(500).json({ error: 'Failed to get report' });
+  }
 });
 
 // ============================================================
 // 404 HANDLER
 // ============================================================
-app.use('/api/*', (req, res) => {
-  console.log(`404: ${req.method} ${req.path}`);
-  res.status(404).json({ error: 'Endpoint not found' });
+
+app.use((req, res) => {
+  res.status(404).json({ error: 'Not found', path: req.path });
 });
 
 // ============================================================
 // ERROR HANDLER
 // ============================================================
+
 app.use((err, req, res, next) => {
-  console.error('Server error:', err);
+  console.error('Unhandled error:', err);
   res.status(500).json({ error: 'Internal server error' });
 });
 
 // ============================================================
-// START
+// START SERVER
 // ============================================================
+
 app.listen(PORT, () => {
   console.log(`
-╔════════════════════════════════════════╗
-║     UPLIFT API SERVER - DEBUG          ║
-║     Port: ${PORT}                          ║
-╚════════════════════════════════════════╝
+╔════════════════════════════════════════════════════════════╗
+║                   UPLIFT DEMO API                          ║
+╠════════════════════════════════════════════════════════════╣
+║  Server running on port ${PORT}                              ║
+║  Environment: ${process.env.NODE_ENV || 'development'}                          ║
+╚════════════════════════════════════════════════════════════╝
   `);
 });
+
+export default app;
