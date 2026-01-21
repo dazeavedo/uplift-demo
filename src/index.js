@@ -1,5 +1,5 @@
 // ============================================================
-// UPLIFT DEMO API - COMPLETE CLEAN VERSION
+// UPLIFT DEMO API - COMPLETE (ALL FIXES)
 // ============================================================
 
 import express from 'express';
@@ -28,13 +28,13 @@ const JWT_SECRET = process.env.JWT_SECRET || 'demo-jwt-secret-2026';
 const authMiddleware = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    if (!authHeader?.startsWith('Bearer ')) {
       return res.status(401).json({ error: 'No token provided' });
     }
     const token = authHeader.slice(7);
     const decoded = jwt.verify(token, JWT_SECRET);
     const result = await db.query(
-      'SELECT u.*, o.name as organization_name FROM users u JOIN organizations o ON o.id = u.organization_id WHERE u.id = $1',
+      `SELECT u.*, o.name as organization_name FROM users u JOIN organizations o ON o.id = u.organization_id WHERE u.id = $1`,
       [decoded.userId]
     );
     if (!result.rows[0]) {
@@ -78,7 +78,7 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(400).json({ error: 'Email and password required' });
     }
     const result = await db.query(
-      'SELECT u.*, o.name as organization_name FROM users u JOIN organizations o ON o.id = u.organization_id WHERE u.email = $1',
+      `SELECT u.*, o.name as organization_name FROM users u JOIN organizations o ON o.id = u.organization_id WHERE u.email = $1`,
       [email.toLowerCase()]
     );
     const user = result.rows[0];
@@ -86,10 +86,10 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
     const pwCheck = await db.query(
-      'SELECT (password_hash = crypt($1, password_hash)) as valid FROM users WHERE id = $2',
+      `SELECT (password_hash = crypt($1, password_hash)) as valid FROM users WHERE id = $2`,
       [password, user.id]
     );
-    if (!pwCheck.rows[0] || !pwCheck.rows[0].valid) {
+    if (!pwCheck.rows[0]?.valid) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
     const token = jwt.sign(
@@ -97,7 +97,7 @@ app.post('/api/auth/login', async (req, res) => {
       JWT_SECRET,
       { expiresIn: '24h' }
     );
-    await db.query('UPDATE users SET last_login_at = NOW() WHERE id = $1', [user.id]);
+    await db.query(`UPDATE users SET last_login_at = NOW() WHERE id = $1`, [user.id]);
     res.json({
       token,
       user: {
@@ -137,7 +137,7 @@ app.post('/api/auth/logout', (req, res) => {
 // Organization
 app.get('/api/organization', authMiddleware, async (req, res) => {
   try {
-    const result = await db.query('SELECT * FROM organizations WHERE id = $1', [req.user.organizationId]);
+    const result = await db.query(`SELECT * FROM organizations WHERE id = $1`, [req.user.organizationId]);
     res.json({ organization: result.rows[0] });
   } catch (error) {
     console.error('Get organization error:', error);
@@ -149,7 +149,7 @@ app.patch('/api/organization', authMiddleware, async (req, res) => {
   try {
     const { name, timezone, currency, date_format, week_starts_on, primary_color } = req.body;
     const result = await db.query(
-      'UPDATE organizations SET name = COALESCE($1, name), timezone = COALESCE($2, timezone), currency = COALESCE($3, currency), date_format = COALESCE($4, date_format), week_starts_on = COALESCE($5, week_starts_on), primary_color = COALESCE($6, primary_color), updated_at = NOW() WHERE id = $7 RETURNING *',
+      `UPDATE organizations SET name = COALESCE($1, name), timezone = COALESCE($2, timezone), currency = COALESCE($3, currency), date_format = COALESCE($4, date_format), week_starts_on = COALESCE($5, week_starts_on), primary_color = COALESCE($6, primary_color), updated_at = NOW() WHERE id = $7 RETURNING *`,
       [name, timezone, currency, date_format, week_starts_on, primary_color, req.user.organizationId]
     );
     res.json({ organization: result.rows[0] });
@@ -159,22 +159,29 @@ app.patch('/api/organization', authMiddleware, async (req, res) => {
   }
 });
 
-// Dashboard - FIXED: returns numbers not strings
+// Dashboard - FIXED: weekMetrics returns numbers not strings
 app.get('/api/dashboard', authMiddleware, async (req, res) => {
   try {
     const orgId = req.user.organizationId;
     const today = new Date().toISOString().split('T')[0];
-    
-    const employees = await db.query('SELECT COUNT(*) FROM employees WHERE organization_id = $1 AND status = $2', [orgId, 'active']);
-    const locations = await db.query('SELECT COUNT(*) FROM locations WHERE organization_id = $1 AND status = $2', [orgId, 'active']);
-    const shiftsToday = await db.query('SELECT COUNT(*) FROM shifts WHERE organization_id = $1 AND date = $2', [orgId, today]);
-    const pendingTimeOff = await db.query('SELECT COUNT(*) FROM time_off_requests WHERE organization_id = $1 AND status = $2', [orgId, 'pending']);
-    const openShifts = await db.query('SELECT COUNT(*) FROM shifts WHERE organization_id = $1 AND is_open = true AND date >= $2', [orgId, today]);
-    const weekMetrics = await db.query(
-      "SELECT COALESCE(SUM(EXTRACT(EPOCH FROM (s.end_time - s.start_time))/3600), 0) as scheduled, COALESCE(SUM(te.total_hours), 0) as worked, COALESCE(SUM(EXTRACT(EPOCH FROM (s.end_time - s.start_time))/3600 * COALESCE(r.default_hourly_rate, 12)), 0) as cost_scheduled, COALESCE(SUM(te.total_hours * COALESCE(r.default_hourly_rate, 12)), 0) as cost_actual FROM shifts s LEFT JOIN time_entries te ON te.shift_id = s.id LEFT JOIN roles r ON r.id = s.role_id WHERE s.organization_id = $1 AND s.date >= date_trunc('week', CURRENT_DATE) AND s.date < date_trunc('week', CURRENT_DATE) + INTERVAL '7 days'",
-      [orgId]
-    );
-
+    const [employees, locations, shiftsToday, pendingTimeOff, openShifts, weekMetrics] = await Promise.all([
+      db.query(`SELECT COUNT(*) FROM employees WHERE organization_id = $1 AND status = 'active'`, [orgId]),
+      db.query(`SELECT COUNT(*) FROM locations WHERE organization_id = $1 AND status = 'active'`, [orgId]),
+      db.query(`SELECT COUNT(*) FROM shifts WHERE organization_id = $1 AND date = $2`, [orgId, today]),
+      db.query(`SELECT COUNT(*) FROM time_off_requests WHERE organization_id = $1 AND status = 'pending'`, [orgId]),
+      db.query(`SELECT COUNT(*) FROM shifts WHERE organization_id = $1 AND is_open = true AND date >= $2`, [orgId, today]),
+      db.query(`
+        SELECT 
+          COALESCE(SUM(EXTRACT(EPOCH FROM (s.end_time - s.start_time))/3600), 0) as scheduled,
+          COALESCE(SUM(te.total_hours), 0) as worked,
+          COALESCE(SUM(EXTRACT(EPOCH FROM (s.end_time - s.start_time))/3600 * COALESCE(r.default_hourly_rate, 12)), 0) as cost_scheduled,
+          COALESCE(SUM(te.total_hours * COALESCE(r.default_hourly_rate, 12)), 0) as cost_actual
+        FROM shifts s
+        LEFT JOIN time_entries te ON te.shift_id = s.id
+        LEFT JOIN roles r ON r.id = s.role_id
+        WHERE s.organization_id = $1 AND s.date >= date_trunc('week', CURRENT_DATE) AND s.date < date_trunc('week', CURRENT_DATE) + INTERVAL '7 days'
+      `, [orgId]),
+    ]);
     res.json({
       today: { date: today },
       activeEmployees: parseInt(employees.rows[0].count),
@@ -195,15 +202,26 @@ app.get('/api/dashboard', authMiddleware, async (req, res) => {
   }
 });
 
-// Forecast - FIXED: returns proper JSON
+// Forecast - FIXED: Single optimized endpoint
 app.get('/api/forecast', authMiddleware, async (req, res) => {
   try {
     const weeks = parseInt(req.query.weeks) || 2;
     const result = await db.query(
-      "SELECT date::text, COUNT(*)::int as total, COUNT(employee_id)::int as filled, COUNT(*) FILTER (WHERE is_open = true)::int as open FROM shifts WHERE organization_id = $1 AND date >= CURRENT_DATE AND date < CURRENT_DATE + ($2::int * 7) GROUP BY date ORDER BY date",
+      `SELECT 
+        date::text,
+        COUNT(*)::int as total,
+        COUNT(employee_id)::int as filled,
+        COUNT(*) FILTER (WHERE is_open = true)::int as open
+       FROM shifts
+       WHERE organization_id = $1 
+         AND date >= CURRENT_DATE 
+         AND date < CURRENT_DATE + ($2::int * 7)
+       GROUP BY date 
+       ORDER BY date`,
       [req.user.organizationId, weeks]
     );
     
+    // Fill in missing dates with zeros
     const forecast = [];
     for (let i = 0; i < weeks * 7; i++) {
       const date = new Date();
@@ -217,7 +235,7 @@ app.get('/api/forecast', authMiddleware, async (req, res) => {
         open: existing ? existing.open : 0
       });
     }
-    res.json({ forecast: forecast });
+    res.json({ forecast });
   } catch (error) {
     console.error('Forecast error:', error);
     res.status(500).json({ error: 'Failed to get forecast' });
@@ -227,14 +245,20 @@ app.get('/api/forecast', authMiddleware, async (req, res) => {
 // Pending Time Entries
 app.get('/api/time/pending', authMiddleware, async (req, res) => {
   try {
-    const locationId = req.query.locationId;
-    let query = 'SELECT te.*, e.first_name, e.last_name, l.name as location_name FROM time_entries te JOIN employees e ON e.id = te.employee_id LEFT JOIN locations l ON l.id = te.location_id WHERE te.organization_id = $1 AND te.status = $2';
-    const params = [req.user.organizationId, 'pending'];
+    const { locationId } = req.query;
+    let query = `
+      SELECT te.*, e.first_name, e.last_name, l.name as location_name
+      FROM time_entries te
+      JOIN employees e ON e.id = te.employee_id
+      LEFT JOIN locations l ON l.id = te.location_id
+      WHERE te.organization_id = $1 AND te.status = 'pending'
+    `;
+    const params = [req.user.organizationId];
     if (locationId && locationId !== 'undefined') {
-      query += ' AND te.location_id = $3';
+      query += ` AND te.location_id = $2`;
       params.push(locationId);
     }
-    query += ' ORDER BY te.clock_in DESC LIMIT 50';
+    query += ` ORDER BY te.clock_in DESC LIMIT 50`;
     const result = await db.query(query, params);
     res.json({ entries: result.rows, total: result.rows.length });
   } catch (error) {
@@ -246,10 +270,13 @@ app.get('/api/time/pending', authMiddleware, async (req, res) => {
 // Employees by Skill
 app.get('/api/skills/:id/employees', authMiddleware, async (req, res) => {
   try {
-    const result = await db.query(
-      'SELECT e.id, e.first_name, e.last_name, e.email, es.proficiency_level FROM employee_skills es JOIN employees e ON e.id = es.employee_id WHERE es.skill_id = $1 AND e.organization_id = $2 AND e.status = $3 ORDER BY es.proficiency_level DESC, e.last_name',
-      [req.params.id, req.user.organizationId, 'active']
-    );
+    const result = await db.query(`
+      SELECT e.id, e.first_name, e.last_name, e.email, es.proficiency_level
+      FROM employee_skills es
+      JOIN employees e ON e.id = es.employee_id
+      WHERE es.skill_id = $1 AND e.organization_id = $2 AND e.status = 'active'
+      ORDER BY es.proficiency_level DESC, e.last_name
+    `, [req.params.id, req.user.organizationId]);
     res.json({ employees: result.rows });
   } catch (error) {
     console.error('Get skill employees error:', error);
@@ -260,36 +287,38 @@ app.get('/api/skills/:id/employees', authMiddleware, async (req, res) => {
 // Employees
 app.get('/api/employees', authMiddleware, async (req, res) => {
   try {
-    const { location, department, status, search, limit, offset } = req.query;
-    const limitNum = parseInt(limit) || 100;
-    const offsetNum = parseInt(offset) || 0;
-    
-    let query = 'SELECT e.*, l.name as location_name, d.name as department_name, r.name as role_name, r.default_hourly_rate as hourly_rate FROM employees e LEFT JOIN locations l ON l.id = e.primary_location_id LEFT JOIN departments d ON d.id = e.department_id LEFT JOIN roles r ON r.id = e.primary_role_id WHERE e.organization_id = $1';
+    const { location, department, status, search, limit = 100, offset = 0 } = req.query;
+    let query = `
+      SELECT e.*, l.name as location_name, d.name as department_name, r.name as role_name, r.default_hourly_rate as hourly_rate
+      FROM employees e
+      LEFT JOIN locations l ON l.id = e.primary_location_id
+      LEFT JOIN departments d ON d.id = e.department_id
+      LEFT JOIN roles r ON r.id = e.primary_role_id
+      WHERE e.organization_id = $1
+    `;
     const params = [req.user.organizationId];
     let paramIndex = 2;
-    
     if (location && location !== 'undefined') {
-      query += ' AND e.primary_location_id = $' + paramIndex++;
+      query += ` AND e.primary_location_id = $${paramIndex++}`;
       params.push(location);
     }
     if (department && department !== 'undefined') {
-      query += ' AND e.department_id = $' + paramIndex++;
+      query += ` AND e.department_id = $${paramIndex++}`;
       params.push(department);
     }
     if (status && status !== 'undefined') {
-      query += ' AND e.status = $' + paramIndex++;
+      query += ` AND e.status = $${paramIndex++}`;
       params.push(status);
     }
     if (search) {
-      query += ' AND (e.first_name ILIKE $' + paramIndex + ' OR e.last_name ILIKE $' + paramIndex + ' OR e.email ILIKE $' + paramIndex + ')';
-      params.push('%' + search + '%');
+      query += ` AND (e.first_name ILIKE $${paramIndex} OR e.last_name ILIKE $${paramIndex} OR e.email ILIKE $${paramIndex})`;
+      params.push(`%${search}%`);
       paramIndex++;
     }
-    query += ' ORDER BY e.last_name, e.first_name LIMIT $' + paramIndex++ + ' OFFSET $' + paramIndex;
-    params.push(limitNum, offsetNum);
-    
+    query += ` ORDER BY e.last_name, e.first_name LIMIT $${paramIndex++} OFFSET $${paramIndex}`;
+    params.push(parseInt(limit), parseInt(offset));
     const result = await db.query(query, params);
-    const countResult = await db.query('SELECT COUNT(*) FROM employees WHERE organization_id = $1', [req.user.organizationId]);
+    const countResult = await db.query(`SELECT COUNT(*) FROM employees WHERE organization_id = $1`, [req.user.organizationId]);
     res.json({ employees: result.rows, total: parseInt(countResult.rows[0].count) });
   } catch (error) {
     console.error('Get employees error:', error);
@@ -300,14 +329,19 @@ app.get('/api/employees', authMiddleware, async (req, res) => {
 app.get('/api/employees/:id', authMiddleware, async (req, res) => {
   try {
     const result = await db.query(
-      'SELECT e.*, l.name as location_name, d.name as department_name, r.name as role_name, r.default_hourly_rate as hourly_rate FROM employees e LEFT JOIN locations l ON l.id = e.primary_location_id LEFT JOIN departments d ON d.id = e.department_id LEFT JOIN roles r ON r.id = e.primary_role_id WHERE e.id = $1 AND e.organization_id = $2',
+      `SELECT e.*, l.name as location_name, d.name as department_name, r.name as role_name, r.default_hourly_rate as hourly_rate
+       FROM employees e
+       LEFT JOIN locations l ON l.id = e.primary_location_id
+       LEFT JOIN departments d ON d.id = e.department_id
+       LEFT JOIN roles r ON r.id = e.primary_role_id
+       WHERE e.id = $1 AND e.organization_id = $2`,
       [req.params.id, req.user.organizationId]
     );
     if (!result.rows[0]) {
       return res.status(404).json({ error: 'Employee not found' });
     }
     const skills = await db.query(
-      'SELECT s.*, es.proficiency, es.verified FROM employee_skills es JOIN skills s ON s.id = es.skill_id WHERE es.employee_id = $1',
+      `SELECT s.*, es.proficiency, es.verified FROM employee_skills es JOIN skills s ON s.id = es.skill_id WHERE es.employee_id = $1`,
       [req.params.id]
     );
     res.json({ employee: { ...result.rows[0], skills: skills.rows } });
@@ -321,7 +355,8 @@ app.post('/api/employees', authMiddleware, async (req, res) => {
   try {
     const { firstName, lastName, email, phone, locationId, departmentId, roleId, employmentType } = req.body;
     const result = await db.query(
-      "INSERT INTO employees (organization_id, first_name, last_name, email, phone, primary_location_id, department_id, primary_role_id, employment_type, status, start_date) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'active', CURRENT_DATE) RETURNING *",
+      `INSERT INTO employees (organization_id, first_name, last_name, email, phone, primary_location_id, department_id, primary_role_id, employment_type, status, start_date)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'active', CURRENT_DATE) RETURNING *`,
       [req.user.organizationId, firstName, lastName, email, phone, locationId, departmentId, roleId, employmentType || 'full-time']
     );
     res.status(201).json({ employee: result.rows[0] });
@@ -335,7 +370,7 @@ app.patch('/api/employees/:id', authMiddleware, async (req, res) => {
   try {
     const { firstName, lastName, email, phone, locationId, departmentId, roleId, employmentType, status } = req.body;
     const result = await db.query(
-      'UPDATE employees SET first_name = COALESCE($1, first_name), last_name = COALESCE($2, last_name), email = COALESCE($3, email), phone = COALESCE($4, phone), primary_location_id = COALESCE($5, primary_location_id), department_id = COALESCE($6, department_id), primary_role_id = COALESCE($7, primary_role_id), employment_type = COALESCE($8, employment_type), status = COALESCE($9, status), updated_at = NOW() WHERE id = $10 AND organization_id = $11 RETURNING *',
+      `UPDATE employees SET first_name = COALESCE($1, first_name), last_name = COALESCE($2, last_name), email = COALESCE($3, email), phone = COALESCE($4, phone), primary_location_id = COALESCE($5, primary_location_id), department_id = COALESCE($6, department_id), primary_role_id = COALESCE($7, primary_role_id), employment_type = COALESCE($8, employment_type), status = COALESCE($9, status), updated_at = NOW() WHERE id = $10 AND organization_id = $11 RETURNING *`,
       [firstName, lastName, email, phone, locationId, departmentId, roleId, employmentType, status, req.params.id, req.user.organizationId]
     );
     if (!result.rows[0]) {
@@ -352,7 +387,8 @@ app.patch('/api/employees/:id', authMiddleware, async (req, res) => {
 app.get('/api/locations', authMiddleware, async (req, res) => {
   try {
     const result = await db.query(
-      "SELECT l.*, (SELECT COUNT(*) FROM employees e WHERE e.primary_location_id = l.id AND e.status = 'active') as employee_count FROM locations l WHERE l.organization_id = $1 ORDER BY l.name",
+      `SELECT l.*, (SELECT COUNT(*) FROM employees e WHERE e.primary_location_id = l.id AND e.status = 'active') as employee_count
+       FROM locations l WHERE l.organization_id = $1 ORDER BY l.name`,
       [req.user.organizationId]
     );
     res.json({ locations: result.rows });
@@ -364,7 +400,7 @@ app.get('/api/locations', authMiddleware, async (req, res) => {
 
 app.get('/api/locations/:id', authMiddleware, async (req, res) => {
   try {
-    const result = await db.query('SELECT * FROM locations WHERE id = $1 AND organization_id = $2', [req.params.id, req.user.organizationId]);
+    const result = await db.query(`SELECT * FROM locations WHERE id = $1 AND organization_id = $2`, [req.params.id, req.user.organizationId]);
     if (!result.rows[0]) {
       return res.status(404).json({ error: 'Location not found' });
     }
@@ -379,7 +415,7 @@ app.post('/api/locations', authMiddleware, async (req, res) => {
   try {
     const { name, code, type, addressLine1, city, postcode, country, timezone } = req.body;
     const result = await db.query(
-      "INSERT INTO locations (organization_id, name, code, type, address_line1, city, postcode, country, timezone, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'active') RETURNING *",
+      `INSERT INTO locations (organization_id, name, code, type, address_line1, city, postcode, country, timezone, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'active') RETURNING *`,
       [req.user.organizationId, name, code, type || 'office', addressLine1, city, postcode, country || 'GB', timezone || 'Europe/London']
     );
     res.status(201).json({ location: result.rows[0] });
@@ -393,7 +429,8 @@ app.post('/api/locations', authMiddleware, async (req, res) => {
 app.get('/api/departments', authMiddleware, async (req, res) => {
   try {
     const result = await db.query(
-      "SELECT d.*, (SELECT COUNT(*) FROM employees e WHERE e.department_id = d.id AND e.status = 'active') as employee_count FROM departments d WHERE d.organization_id = $1 ORDER BY d.name",
+      `SELECT d.*, (SELECT COUNT(*) FROM employees e WHERE e.department_id = d.id AND e.status = 'active') as employee_count
+       FROM departments d WHERE d.organization_id = $1 ORDER BY d.name`,
       [req.user.organizationId]
     );
     res.json({ departments: result.rows });
@@ -406,7 +443,7 @@ app.get('/api/departments', authMiddleware, async (req, res) => {
 app.post('/api/departments', authMiddleware, async (req, res) => {
   try {
     const { name, code } = req.body;
-    const result = await db.query('INSERT INTO departments (organization_id, name, code) VALUES ($1, $2, $3) RETURNING *', [req.user.organizationId, name, code]);
+    const result = await db.query(`INSERT INTO departments (organization_id, name, code) VALUES ($1, $2, $3) RETURNING *`, [req.user.organizationId, name, code]);
     res.status(201).json({ department: result.rows[0] });
   } catch (error) {
     console.error('Create department error:', error);
@@ -417,7 +454,7 @@ app.post('/api/departments', authMiddleware, async (req, res) => {
 // Roles
 app.get('/api/roles', authMiddleware, async (req, res) => {
   try {
-    const result = await db.query('SELECT * FROM roles WHERE organization_id = $1 ORDER BY name', [req.user.organizationId]);
+    const result = await db.query(`SELECT * FROM roles WHERE organization_id = $1 ORDER BY name`, [req.user.organizationId]);
     res.json({ roles: result.rows });
   } catch (error) {
     console.error('Get roles error:', error);
@@ -428,7 +465,7 @@ app.get('/api/roles', authMiddleware, async (req, res) => {
 app.post('/api/roles', authMiddleware, async (req, res) => {
   try {
     const { name, hourlyRate } = req.body;
-    const result = await db.query('INSERT INTO roles (organization_id, name, default_hourly_rate) VALUES ($1, $2, $3) RETURNING *', [req.user.organizationId, name, hourlyRate]);
+    const result = await db.query(`INSERT INTO roles (organization_id, name, default_hourly_rate) VALUES ($1, $2, $3) RETURNING *`, [req.user.organizationId, name, hourlyRate]);
     res.status(201).json({ role: result.rows[0] });
   } catch (error) {
     console.error('Create role error:', error);
@@ -440,7 +477,8 @@ app.post('/api/roles', authMiddleware, async (req, res) => {
 app.get('/api/skills', authMiddleware, async (req, res) => {
   try {
     const result = await db.query(
-      'SELECT s.*, (SELECT COUNT(*) FROM employee_skills es WHERE es.skill_id = s.id) as employee_count FROM skills s WHERE s.organization_id = $1 ORDER BY s.category, s.name',
+      `SELECT s.*, (SELECT COUNT(*) FROM employee_skills es WHERE es.skill_id = s.id) as employee_count
+       FROM skills s WHERE s.organization_id = $1 ORDER BY s.category, s.name`,
       [req.user.organizationId]
     );
     res.json({ skills: result.rows });
@@ -453,7 +491,7 @@ app.get('/api/skills', authMiddleware, async (req, res) => {
 app.post('/api/skills', authMiddleware, async (req, res) => {
   try {
     const { name, category } = req.body;
-    const result = await db.query("INSERT INTO skills (organization_id, name, category) VALUES ($1, $2, $3) RETURNING *", [req.user.organizationId, name, category || 'technical']);
+    const result = await db.query(`INSERT INTO skills (organization_id, name, category) VALUES ($1, $2, $3) RETURNING *`, [req.user.organizationId, name, category || 'technical']);
     res.status(201).json({ skill: result.rows[0] });
   } catch (error) {
     console.error('Create skill error:', error);
@@ -465,27 +503,33 @@ app.post('/api/skills', authMiddleware, async (req, res) => {
 app.get('/api/shifts', authMiddleware, async (req, res) => {
   try {
     const { start, end, location, employee } = req.query;
-    let query = 'SELECT s.*, e.first_name as employee_first_name, e.last_name as employee_last_name, l.name as location_name, r.name as role_name FROM shifts s LEFT JOIN employees e ON e.id = s.employee_id LEFT JOIN locations l ON l.id = s.location_id LEFT JOIN roles r ON r.id = s.role_id WHERE s.organization_id = $1';
+    let query = `
+      SELECT s.*, e.first_name as employee_first_name, e.last_name as employee_last_name, l.name as location_name, r.name as role_name
+      FROM shifts s
+      LEFT JOIN employees e ON e.id = s.employee_id
+      LEFT JOIN locations l ON l.id = s.location_id
+      LEFT JOIN roles r ON r.id = s.role_id
+      WHERE s.organization_id = $1
+    `;
     const params = [req.user.organizationId];
     let paramIndex = 2;
-    
     if (start) {
-      query += ' AND s.date >= $' + paramIndex++;
+      query += ` AND s.date >= $${paramIndex++}`;
       params.push(start);
     }
     if (end) {
-      query += ' AND s.date <= $' + paramIndex++;
+      query += ` AND s.date <= $${paramIndex++}`;
       params.push(end);
     }
     if (location && location !== 'undefined' && location !== 'null') {
-      query += ' AND s.location_id = $' + paramIndex++;
+      query += ` AND s.location_id = $${paramIndex++}`;
       params.push(location);
     }
     if (employee && employee !== 'undefined' && employee !== 'null') {
-      query += ' AND s.employee_id = $' + paramIndex++;
+      query += ` AND s.employee_id = $${paramIndex++}`;
       params.push(employee);
     }
-    query += ' ORDER BY s.date, s.start_time LIMIT 500';
+    query += ` ORDER BY s.date, s.start_time LIMIT 500`;
     const result = await db.query(query, params);
     res.json({ shifts: result.rows });
   } catch (error) {
@@ -498,7 +542,7 @@ app.post('/api/shifts', authMiddleware, async (req, res) => {
   try {
     const { employeeId, locationId, roleId, date, startTime, endTime } = req.body;
     const result = await db.query(
-      "INSERT INTO shifts (organization_id, employee_id, location_id, role_id, date, start_time, end_time, status) VALUES ($1, $2, $3, $4, $5, $6, $7, 'scheduled') RETURNING *",
+      `INSERT INTO shifts (organization_id, employee_id, location_id, role_id, date, start_time, end_time, status) VALUES ($1, $2, $3, $4, $5, $6, $7, 'scheduled') RETURNING *`,
       [req.user.organizationId, employeeId, locationId, roleId, date, startTime, endTime]
     );
     res.status(201).json({ shift: result.rows[0] });
@@ -512,7 +556,7 @@ app.patch('/api/shifts/:id', authMiddleware, async (req, res) => {
   try {
     const { employeeId, date, startTime, endTime, status } = req.body;
     const result = await db.query(
-      'UPDATE shifts SET employee_id = COALESCE($1, employee_id), date = COALESCE($2, date), start_time = COALESCE($3, start_time), end_time = COALESCE($4, end_time), status = COALESCE($5, status), updated_at = NOW() WHERE id = $6 AND organization_id = $7 RETURNING *',
+      `UPDATE shifts SET employee_id = COALESCE($1, employee_id), date = COALESCE($2, date), start_time = COALESCE($3, start_time), end_time = COALESCE($4, end_time), status = COALESCE($5, status), updated_at = NOW() WHERE id = $6 AND organization_id = $7 RETURNING *`,
       [employeeId, date, startTime, endTime, status, req.params.id, req.user.organizationId]
     );
     res.json({ shift: result.rows[0] });
@@ -524,7 +568,7 @@ app.patch('/api/shifts/:id', authMiddleware, async (req, res) => {
 
 app.delete('/api/shifts/:id', authMiddleware, async (req, res) => {
   try {
-    await db.query('DELETE FROM shifts WHERE id = $1 AND organization_id = $2', [req.params.id, req.user.organizationId]);
+    await db.query(`DELETE FROM shifts WHERE id = $1 AND organization_id = $2`, [req.params.id, req.user.organizationId]);
     res.json({ success: true });
   } catch (error) {
     console.error('Delete shift error:', error);
@@ -536,18 +580,24 @@ app.delete('/api/shifts/:id', authMiddleware, async (req, res) => {
 app.get('/api/open-shifts', authMiddleware, async (req, res) => {
   try {
     const { start, end } = req.query;
-    let query = 'SELECT s.*, l.name as location_name, r.name as role_name FROM shifts s LEFT JOIN locations l ON l.id = s.location_id LEFT JOIN roles r ON r.id = s.role_id WHERE s.organization_id = $1 AND s.is_open = true';
+    let query = `
+      SELECT s.*, l.name as location_name, r.name as role_name
+      FROM shifts s
+      LEFT JOIN locations l ON l.id = s.location_id
+      LEFT JOIN roles r ON r.id = s.role_id
+      WHERE s.organization_id = $1 AND s.is_open = true
+    `;
     const params = [req.user.organizationId];
     let paramIndex = 2;
     if (start) {
-      query += ' AND s.date >= $' + paramIndex++;
+      query += ` AND s.date >= $${paramIndex++}`;
       params.push(start);
     }
     if (end) {
-      query += ' AND s.date <= $' + paramIndex++;
+      query += ` AND s.date <= $${paramIndex++}`;
       params.push(end);
     }
-    query += ' ORDER BY s.date, s.start_time LIMIT 100';
+    query += ` ORDER BY s.date, s.start_time LIMIT 100`;
     const result = await db.query(query, params);
     res.json({ shifts: result.rows });
   } catch (error) {
@@ -573,7 +623,7 @@ app.post('/api/shift-swaps', authMiddleware, (req, res) => {
 // Time Off
 app.get('/api/time-off/policies', authMiddleware, async (req, res) => {
   try {
-    const result = await db.query('SELECT * FROM time_off_policies WHERE organization_id = $1 ORDER BY name', [req.user.organizationId]);
+    const result = await db.query(`SELECT * FROM time_off_policies WHERE organization_id = $1 ORDER BY name`, [req.user.organizationId]);
     res.json({ policies: result.rows });
   } catch (error) {
     console.error('Get policies error:', error);
@@ -584,18 +634,24 @@ app.get('/api/time-off/policies', authMiddleware, async (req, res) => {
 app.get('/api/time-off/requests', authMiddleware, async (req, res) => {
   try {
     const { status, employee } = req.query;
-    let query = 'SELECT tor.*, e.first_name as employee_first_name, e.last_name as employee_last_name, p.name as policy_name FROM time_off_requests tor JOIN employees e ON e.id = tor.employee_id LEFT JOIN time_off_policies p ON p.id = tor.policy_id WHERE tor.organization_id = $1';
+    let query = `
+      SELECT tor.*, e.first_name as employee_first_name, e.last_name as employee_last_name, p.name as policy_name
+      FROM time_off_requests tor
+      JOIN employees e ON e.id = tor.employee_id
+      LEFT JOIN time_off_policies p ON p.id = tor.policy_id
+      WHERE tor.organization_id = $1
+    `;
     const params = [req.user.organizationId];
     let paramIndex = 2;
     if (status && status !== 'undefined') {
-      query += ' AND tor.status = $' + paramIndex++;
+      query += ` AND tor.status = $${paramIndex++}`;
       params.push(status);
     }
     if (employee && employee !== 'undefined') {
-      query += ' AND tor.employee_id = $' + paramIndex++;
+      query += ` AND tor.employee_id = $${paramIndex++}`;
       params.push(employee);
     }
-    query += ' ORDER BY tor.start_date DESC';
+    query += ` ORDER BY tor.start_date DESC`;
     const result = await db.query(query, params);
     res.json({ requests: result.rows });
   } catch (error) {
@@ -607,8 +663,8 @@ app.get('/api/time-off/requests', authMiddleware, async (req, res) => {
 app.post('/api/time-off/requests/:id/approve', authMiddleware, async (req, res) => {
   try {
     const result = await db.query(
-      'UPDATE time_off_requests SET status = $1, reviewed_by = $2, reviewed_at = NOW() WHERE id = $3 AND organization_id = $4 RETURNING *',
-      ['approved', req.user.userId, req.params.id, req.user.organizationId]
+      `UPDATE time_off_requests SET status = 'approved', reviewed_by = $1, reviewed_at = NOW() WHERE id = $2 AND organization_id = $3 RETURNING *`,
+      [req.user.userId, req.params.id, req.user.organizationId]
     );
     res.json({ request: result.rows[0] });
   } catch (error) {
@@ -621,8 +677,8 @@ app.post('/api/time-off/requests/:id/reject', authMiddleware, async (req, res) =
   try {
     const { notes } = req.body;
     const result = await db.query(
-      'UPDATE time_off_requests SET status = $1, reviewed_by = $2, reviewed_at = NOW(), review_notes = $3 WHERE id = $4 AND organization_id = $5 RETURNING *',
-      ['rejected', req.user.userId, notes, req.params.id, req.user.organizationId]
+      `UPDATE time_off_requests SET status = 'rejected', reviewed_by = $1, reviewed_at = NOW(), review_notes = $2 WHERE id = $3 AND organization_id = $4 RETURNING *`,
+      [req.user.userId, notes, req.params.id, req.user.organizationId]
     );
     res.json({ request: result.rows[0] });
   } catch (error) {
@@ -635,26 +691,31 @@ app.post('/api/time-off/requests/:id/reject', authMiddleware, async (req, res) =
 app.get('/api/time/entries', authMiddleware, async (req, res) => {
   try {
     const { start, end, employee, status } = req.query;
-    let query = 'SELECT te.*, e.first_name as employee_first_name, e.last_name as employee_last_name FROM time_entries te JOIN employees e ON e.id = te.employee_id WHERE te.organization_id = $1';
+    let query = `
+      SELECT te.*, e.first_name as employee_first_name, e.last_name as employee_last_name
+      FROM time_entries te
+      JOIN employees e ON e.id = te.employee_id
+      WHERE te.organization_id = $1
+    `;
     const params = [req.user.organizationId];
     let paramIndex = 2;
     if (start) {
-      query += ' AND te.clock_in >= $' + paramIndex++;
+      query += ` AND te.clock_in >= $${paramIndex++}`;
       params.push(start);
     }
     if (end) {
-      query += ' AND te.clock_in <= $' + paramIndex++;
+      query += ` AND te.clock_in <= $${paramIndex++}`;
       params.push(end);
     }
     if (employee && employee !== 'undefined') {
-      query += ' AND te.employee_id = $' + paramIndex++;
+      query += ` AND te.employee_id = $${paramIndex++}`;
       params.push(employee);
     }
     if (status && status !== 'undefined') {
-      query += ' AND te.status = $' + paramIndex++;
+      query += ` AND te.status = $${paramIndex++}`;
       params.push(status);
     }
-    query += ' ORDER BY te.clock_in DESC LIMIT 500';
+    query += ` ORDER BY te.clock_in DESC LIMIT 500`;
     const result = await db.query(query, params);
     res.json({ entries: result.rows });
   } catch (error) {
@@ -667,13 +728,19 @@ app.get('/api/time/entries', authMiddleware, async (req, res) => {
 app.get('/api/jobs', authMiddleware, async (req, res) => {
   try {
     const { status } = req.query;
-    let query = 'SELECT jp.*, l.name as location_name, d.name as department_name FROM job_postings jp LEFT JOIN locations l ON l.id = jp.location_id LEFT JOIN departments d ON d.id = jp.department_id WHERE jp.organization_id = $1';
+    let query = `
+      SELECT jp.*, l.name as location_name, d.name as department_name
+      FROM job_postings jp
+      LEFT JOIN locations l ON l.id = jp.location_id
+      LEFT JOIN departments d ON d.id = jp.department_id
+      WHERE jp.organization_id = $1
+    `;
     const params = [req.user.organizationId];
     if (status && status !== 'undefined') {
-      query += ' AND jp.status = $2';
+      query += ` AND jp.status = $2`;
       params.push(status);
     }
-    query += ' ORDER BY jp.posted_at DESC';
+    query += ` ORDER BY jp.posted_at DESC`;
     const result = await db.query(query, params);
     res.json({ jobs: result.rows });
   } catch (error) {
@@ -685,7 +752,11 @@ app.get('/api/jobs', authMiddleware, async (req, res) => {
 app.get('/api/jobs/:id', authMiddleware, async (req, res) => {
   try {
     const result = await db.query(
-      'SELECT jp.*, l.name as location_name, d.name as department_name FROM job_postings jp LEFT JOIN locations l ON l.id = jp.location_id LEFT JOIN departments d ON d.id = jp.department_id WHERE jp.id = $1 AND jp.organization_id = $2',
+      `SELECT jp.*, l.name as location_name, d.name as department_name
+       FROM job_postings jp
+       LEFT JOIN locations l ON l.id = jp.location_id
+       LEFT JOIN departments d ON d.id = jp.department_id
+       WHERE jp.id = $1 AND jp.organization_id = $2`,
       [req.params.id, req.user.organizationId]
     );
     if (!result.rows[0]) {
@@ -702,7 +773,7 @@ app.get('/api/jobs/:id', authMiddleware, async (req, res) => {
 app.get('/api/users', authMiddleware, async (req, res) => {
   try {
     const result = await db.query(
-      'SELECT id, email, first_name, last_name, role, status, last_login_at, created_at FROM users WHERE organization_id = $1 ORDER BY last_name, first_name',
+      `SELECT id, email, first_name, last_name, role, status, last_login_at, created_at FROM users WHERE organization_id = $1 ORDER BY last_name, first_name`,
       [req.user.organizationId]
     );
     res.json({ users: result.rows });
@@ -716,7 +787,7 @@ app.patch('/api/users/me', authMiddleware, async (req, res) => {
   try {
     const { firstName, lastName, phone } = req.body;
     const result = await db.query(
-      'UPDATE users SET first_name = COALESCE($1, first_name), last_name = COALESCE($2, last_name), phone = COALESCE($3, phone), updated_at = NOW() WHERE id = $4 RETURNING id, email, first_name, last_name, phone, role',
+      `UPDATE users SET first_name = COALESCE($1, first_name), last_name = COALESCE($2, last_name), phone = COALESCE($3, phone), updated_at = NOW() WHERE id = $4 RETURNING id, email, first_name, last_name, phone, role`,
       [firstName, lastName, phone, req.user.userId]
     );
     res.json({ user: result.rows[0] });
@@ -759,7 +830,18 @@ app.get('/api/reports/hours', authMiddleware, async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
     const result = await db.query(
-      "SELECT e.id as employee_id, e.first_name, e.last_name, l.name as location_name, COUNT(te.id) as entry_count, COALESCE(SUM(te.total_hours), 0) as total_hours, COALESCE(SUM(te.regular_hours), 0) as regular_hours, COALESCE(SUM(te.overtime_hours), 0) as overtime_hours FROM employees e LEFT JOIN locations l ON l.id = e.primary_location_id LEFT JOIN time_entries te ON te.employee_id = e.id AND te.clock_in >= COALESCE($2::date, CURRENT_DATE - INTERVAL '30 days') AND te.clock_in <= COALESCE($3::date, CURRENT_DATE) + INTERVAL '1 day' WHERE e.organization_id = $1 AND e.status = 'active' GROUP BY e.id, e.first_name, e.last_name, l.name HAVING COUNT(te.id) > 0 ORDER BY total_hours DESC LIMIT 50",
+      `SELECT e.id as employee_id, e.first_name, e.last_name, l.name as location_name,
+              COUNT(te.id) as entry_count, COALESCE(SUM(te.total_hours), 0) as total_hours,
+              COALESCE(SUM(te.regular_hours), 0) as regular_hours, COALESCE(SUM(te.overtime_hours), 0) as overtime_hours
+       FROM employees e
+       LEFT JOIN locations l ON l.id = e.primary_location_id
+       LEFT JOIN time_entries te ON te.employee_id = e.id 
+         AND te.clock_in >= COALESCE($2::date, CURRENT_DATE - INTERVAL '30 days')
+         AND te.clock_in <= COALESCE($3::date, CURRENT_DATE) + INTERVAL '1 day'
+       WHERE e.organization_id = $1 AND e.status = 'active'
+       GROUP BY e.id, e.first_name, e.last_name, l.name
+       HAVING COUNT(te.id) > 0
+       ORDER BY total_hours DESC LIMIT 50`,
       [req.user.organizationId, startDate, endDate]
     );
     res.json({ data: result.rows });
@@ -782,14 +864,14 @@ app.use((err, req, res, next) => {
 
 // Start
 app.listen(PORT, () => {
-  console.log('');
-  console.log('========================================');
-  console.log('       UPLIFT DEMO API                 ');
-  console.log('========================================');
-  console.log('  Server running on port ' + PORT);
-  console.log('  Environment: ' + (process.env.NODE_ENV || 'development'));
-  console.log('========================================');
-  console.log('');
+  console.log(`
+╔════════════════════════════════════════════════════════════╗
+║                   UPLIFT DEMO API                          ║
+╠════════════════════════════════════════════════════════════╣
+║  Server running on port ${PORT}                              ║
+║  Environment: ${process.env.NODE_ENV || 'development'}                          ║
+╚════════════════════════════════════════════════════════════╝
+  `);
 });
 
 export default app;
