@@ -1,5 +1,5 @@
 // ============================================================
-// UPLIFT DEMO API - COMPLETE
+// UPLIFT DEMO API - COMPLETE (ALL FIXES)
 // ============================================================
 
 import express from 'express';
@@ -134,6 +134,114 @@ app.post('/api/auth/logout', (req, res) => {
   res.json({ success: true });
 });
 
+// Organization
+app.get('/api/organization', authMiddleware, async (req, res) => {
+  try {
+    const result = await db.query(`SELECT * FROM organizations WHERE id = $1`, [req.user.organizationId]);
+    res.json({ organization: result.rows[0] });
+  } catch (error) {
+    console.error('Get organization error:', error);
+    res.status(500).json({ error: 'Failed to get organization' });
+  }
+});
+
+app.patch('/api/organization', authMiddleware, async (req, res) => {
+  try {
+    const { name, timezone, currency, date_format, week_starts_on, primary_color } = req.body;
+    const result = await db.query(
+      `UPDATE organizations SET name = COALESCE($1, name), timezone = COALESCE($2, timezone), currency = COALESCE($3, currency), date_format = COALESCE($4, date_format), week_starts_on = COALESCE($5, week_starts_on), primary_color = COALESCE($6, primary_color), updated_at = NOW() WHERE id = $7 RETURNING *`,
+      [name, timezone, currency, date_format, week_starts_on, primary_color, req.user.organizationId]
+    );
+    res.json({ organization: result.rows[0] });
+  } catch (error) {
+    console.error('Update organization error:', error);
+    res.status(500).json({ error: 'Failed to update organization' });
+  }
+});
+
+// Dashboard - FIXED: weekMetrics returns numbers not strings
+app.get('/api/dashboard', authMiddleware, async (req, res) => {
+  try {
+    const orgId = req.user.organizationId;
+    const today = new Date().toISOString().split('T')[0];
+    const [employees, locations, shiftsToday, pendingTimeOff, openShifts, weekMetrics] = await Promise.all([
+      db.query(`SELECT COUNT(*) FROM employees WHERE organization_id = $1 AND status = 'active'`, [orgId]),
+      db.query(`SELECT COUNT(*) FROM locations WHERE organization_id = $1 AND status = 'active'`, [orgId]),
+      db.query(`SELECT COUNT(*) FROM shifts WHERE organization_id = $1 AND date = $2`, [orgId, today]),
+      db.query(`SELECT COUNT(*) FROM time_off_requests WHERE organization_id = $1 AND status = 'pending'`, [orgId]),
+      db.query(`SELECT COUNT(*) FROM shifts WHERE organization_id = $1 AND is_open = true AND date >= $2`, [orgId, today]),
+      db.query(`
+        SELECT 
+          COALESCE(SUM(EXTRACT(EPOCH FROM (s.end_time - s.start_time))/3600), 0) as scheduled,
+          COALESCE(SUM(te.total_hours), 0) as worked,
+          COALESCE(SUM(EXTRACT(EPOCH FROM (s.end_time - s.start_time))/3600 * COALESCE(r.default_hourly_rate, 12)), 0) as cost_scheduled,
+          COALESCE(SUM(te.total_hours * COALESCE(r.default_hourly_rate, 12)), 0) as cost_actual
+        FROM shifts s
+        LEFT JOIN time_entries te ON te.shift_id = s.id
+        LEFT JOIN roles r ON r.id = s.role_id
+        WHERE s.organization_id = $1 AND s.date >= date_trunc('week', CURRENT_DATE) AND s.date < date_trunc('week', CURRENT_DATE) + INTERVAL '7 days'
+      `, [orgId]),
+    ]);
+    res.json({
+      today: { date: today },
+      activeEmployees: parseInt(employees.rows[0].count),
+      activeLocations: parseInt(locations.rows[0].count),
+      shiftsToday: parseInt(shiftsToday.rows[0].count),
+      pendingApprovals: { time_off: parseInt(pendingTimeOff.rows[0].count), timesheets: 0 },
+      openShifts: parseInt(openShifts.rows[0].count),
+      weekMetrics: {
+        scheduled: Math.round(parseFloat(weekMetrics.rows[0].scheduled || 0)),
+        worked: Math.round(parseFloat(weekMetrics.rows[0].worked || 0)),
+        cost_scheduled: Math.round(parseFloat(weekMetrics.rows[0].cost_scheduled || 0)),
+        cost_actual: Math.round(parseFloat(weekMetrics.rows[0].cost_actual || 0)),
+      },
+    });
+  } catch (error) {
+    console.error('Dashboard error:', error);
+    res.status(500).json({ error: 'Failed to load dashboard' });
+  }
+});
+
+// Forecast - FIXED: Single optimized endpoint
+app.get('/api/forecast', authMiddleware, async (req, res) => {
+  try {
+    const weeks = parseInt(req.query.weeks) || 2;
+    const result = await db.query(
+      `SELECT 
+        date::text,
+        COUNT(*)::int as total,
+        COUNT(employee_id)::int as filled,
+        COUNT(*) FILTER (WHERE is_open = true)::int as open
+       FROM shifts
+       WHERE organization_id = $1 
+         AND date >= CURRENT_DATE 
+         AND date < CURRENT_DATE + ($2::int * 7)
+       GROUP BY date 
+       ORDER BY date`,
+      [req.user.organizationId, weeks]
+    );
+    
+    // Fill in missing dates with zeros
+    const forecast = [];
+    for (let i = 0; i < weeks * 7; i++) {
+      const date = new Date();
+      date.setDate(date.getDate() + i);
+      const dateStr = date.toISOString().split('T')[0];
+      const existing = result.rows.find(r => r.date === dateStr);
+      forecast.push({
+        date: dateStr,
+        shifts: existing ? existing.total : 0,
+        filled: existing ? existing.filled : 0,
+        open: existing ? existing.open : 0
+      });
+    }
+    res.json({ forecast });
+  } catch (error) {
+    console.error('Forecast error:', error);
+    res.status(500).json({ error: 'Failed to get forecast' });
+  }
+});
+
 // Pending Time Entries
 app.get('/api/time/pending', authMiddleware, async (req, res) => {
   try {
@@ -173,101 +281,6 @@ app.get('/api/skills/:id/employees', authMiddleware, async (req, res) => {
   } catch (error) {
     console.error('Get skill employees error:', error);
     res.status(500).json({ error: 'Failed to get employees' });
-  }
-});
-
-// Forecast endpoint
-app.get('/api/forecast', authMiddleware, async (req, res) => {
-  try {
-    const weeks = parseInt(req.query.weeks) || 2;
-    const days = [];
-    for (let i = 0; i < weeks * 7; i++) {
-      const date = new Date();
-      date.setDate(date.getDate() + i);
-      const dateStr = date.toISOString().split('T')[0];
-      const result = await db.query(`
-        SELECT COUNT(*) as total, SUM(CASE WHEN is_open THEN 1 ELSE 0 END) as open
-        FROM shifts WHERE organization_id = $1 AND date = $2
-      `, [req.user.organizationId, dateStr]);
-      days.push({
-        date: dateStr,
-        shifts: parseInt(result.rows[0].total) || 0,
-        open: parseInt(result.rows[0].open) || 0,
-        filled: parseInt(result.rows[0].total) - parseInt(result.rows[0].open) || 0
-      });
-    }
-    res.json({ forecast: days });
-  } catch (error) {
-    console.error('Forecast error:', error);
-    res.status(500).json({ error: 'Failed to get forecast' });
-  }
-});
-
-// Organization
-app.get('/api/organization', authMiddleware, async (req, res) => {
-  try {
-    const result = await db.query(`SELECT * FROM organizations WHERE id = $1`, [req.user.organizationId]);
-    res.json({ organization: result.rows[0] });
-  } catch (error) {
-    console.error('Get organization error:', error);
-    res.status(500).json({ error: 'Failed to get organization' });
-  }
-});
-
-app.patch('/api/organization', authMiddleware, async (req, res) => {
-  try {
-    const { name, timezone, currency, date_format, week_starts_on, primary_color } = req.body;
-    const result = await db.query(
-      `UPDATE organizations SET name = COALESCE($1, name), timezone = COALESCE($2, timezone), currency = COALESCE($3, currency), date_format = COALESCE($4, date_format), week_starts_on = COALESCE($5, week_starts_on), primary_color = COALESCE($6, primary_color), updated_at = NOW() WHERE id = $7 RETURNING *`,
-      [name, timezone, currency, date_format, week_starts_on, primary_color, req.user.organizationId]
-    );
-    res.json({ organization: result.rows[0] });
-  } catch (error) {
-    console.error('Update organization error:', error);
-    res.status(500).json({ error: 'Failed to update organization' });
-  }
-});
-
-// Dashboard
-app.get('/api/dashboard', authMiddleware, async (req, res) => {
-  try {
-    const orgId = req.user.organizationId;
-    const today = new Date().toISOString().split('T')[0];
-    const [employees, locations, shiftsToday, pendingTimeOff, openShifts, weekMetrics] = await Promise.all([
-      db.query(`SELECT COUNT(*) FROM employees WHERE organization_id = $1 AND status = 'active'`, [orgId]),
-      db.query(`SELECT COUNT(*) FROM locations WHERE organization_id = $1 AND status = 'active'`, [orgId]),
-      db.query(`SELECT COUNT(*) FROM shifts WHERE organization_id = $1 AND date = $2`, [orgId, today]),
-      db.query(`SELECT COUNT(*) FROM time_off_requests WHERE organization_id = $1 AND status = 'pending'`, [orgId]),
-      db.query(`SELECT COUNT(*) FROM shifts WHERE organization_id = $1 AND is_open = true AND date >= $2`, [orgId, today]),
-      db.query(`
-        SELECT 
-          COALESCE(SUM(EXTRACT(EPOCH FROM (s.end_time - s.start_time))/3600), 0) as scheduled,
-          COALESCE(SUM(te.total_hours), 0) as worked,
-          COALESCE(SUM(EXTRACT(EPOCH FROM (s.end_time - s.start_time))/3600 * COALESCE(r.default_hourly_rate, 12)), 0) as cost_scheduled,
-          COALESCE(SUM(te.total_hours * COALESCE(r.default_hourly_rate, 12)), 0) as cost_actual
-        FROM shifts s
-        LEFT JOIN time_entries te ON te.shift_id = s.id
-        LEFT JOIN roles r ON r.id = s.role_id
-        WHERE s.organization_id = $1 AND s.date >= date_trunc('week', CURRENT_DATE) AND s.date < date_trunc('week', CURRENT_DATE) + INTERVAL '7 days'
-      `, [orgId]),
-    ]);
-    res.json({
-      today: { date: today },
-      activeEmployees: parseInt(employees.rows[0].count),
-      activeLocations: parseInt(locations.rows[0].count),
-      shiftsToday: parseInt(shiftsToday.rows[0].count),
-      pendingApprovals: { time_off: parseInt(pendingTimeOff.rows[0].count), timesheets: 0 },
-      openShifts: parseInt(openShifts.rows[0].count),
-      weekMetrics: {
-        scheduled: parseFloat(weekMetrics.rows[0].scheduled || 0).toFixed(0),
-        worked: parseFloat(weekMetrics.rows[0].worked || 0).toFixed(0),
-        cost_scheduled: parseFloat(weekMetrics.rows[0].cost_scheduled || 0).toFixed(0),
-        cost_actual: parseFloat(weekMetrics.rows[0].cost_actual || 0).toFixed(0),
-      },
-    });
-  } catch (error) {
-    console.error('Dashboard error:', error);
-    res.status(500).json({ error: 'Failed to load dashboard' });
   }
 });
 
@@ -592,6 +605,7 @@ app.get('/api/open-shifts', authMiddleware, async (req, res) => {
     res.status(500).json({ error: 'Failed to get open shifts' });
   }
 });
+
 // Shift Templates
 app.get('/api/shift-templates', authMiddleware, (req, res) => {
   res.json({ templates: [] });
@@ -834,24 +848,6 @@ app.get('/api/reports/hours', authMiddleware, async (req, res) => {
   } catch (error) {
     console.error('Get hours report error:', error);
     res.status(500).json({ error: 'Failed to get report' });
-  }
-});
-
-// Forecast
-app.get('/api/forecast', authMiddleware, async (req, res) => {
-  try {
-    const { weeks = 2 } = req.query;
-    const result = await db.query(
-      `SELECT date, COUNT(*) as total, COUNT(employee_id) as filled, COUNT(*) FILTER (WHERE is_open = true) as open
-       FROM shifts
-       WHERE organization_id = $1 AND date >= CURRENT_DATE AND date < CURRENT_DATE + ($2::int * 7)
-       GROUP BY date ORDER BY date`,
-      [req.user.organizationId, weeks]
-    );
-    res.json({ forecast: result.rows });
-  } catch (error) {
-    console.error('Get forecast error:', error);
-    res.status(500).json({ error: 'Failed to get forecast' });
   }
 });
 
