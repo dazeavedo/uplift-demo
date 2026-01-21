@@ -159,28 +159,18 @@ app.patch('/api/organization', authMiddleware, async (req, res) => {
   }
 });
 
-// Dashboard - FIXED: weekMetrics returns numbers not strings
+// Dashboard
 app.get('/api/dashboard', authMiddleware, async (req, res) => {
   try {
     const orgId = req.user.organizationId;
     const today = new Date().toISOString().split('T')[0];
     const [employees, locations, shiftsToday, pendingTimeOff, openShifts, weekMetrics] = await Promise.all([
-      db.query(`SELECT COUNT(*) FROM employees WHERE organization_id = $1 AND status = 'active'`, [orgId]),
-      db.query(`SELECT COUNT(*) FROM locations WHERE organization_id = $1 AND status = 'active'`, [orgId]),
-      db.query(`SELECT COUNT(*) FROM shifts WHERE organization_id = $1 AND date = $2`, [orgId, today]),
-      db.query(`SELECT COUNT(*) FROM time_off_requests WHERE organization_id = $1 AND status = 'pending'`, [orgId]),
-      db.query(`SELECT COUNT(*) FROM shifts WHERE organization_id = $1 AND is_open = true AND date >= $2`, [orgId, today]),
-      db.query(`
-        SELECT 
-          COALESCE(SUM(EXTRACT(EPOCH FROM (s.end_time - s.start_time))/3600), 0) as scheduled,
-          COALESCE(SUM(te.total_hours), 0) as worked,
-          COALESCE(SUM(EXTRACT(EPOCH FROM (s.end_time - s.start_time))/3600 * COALESCE(r.default_hourly_rate, 12)), 0) as cost_scheduled,
-          COALESCE(SUM(te.total_hours * COALESCE(r.default_hourly_rate, 12)), 0) as cost_actual
-        FROM shifts s
-        LEFT JOIN time_entries te ON te.shift_id = s.id
-        LEFT JOIN roles r ON r.id = s.role_id
-        WHERE s.organization_id = $1 AND s.date >= date_trunc('week', CURRENT_DATE) AND s.date < date_trunc('week', CURRENT_DATE) + INTERVAL '7 days'
-      `, [orgId]),
+      db.query('SELECT COUNT(*) FROM employees WHERE organization_id = $1 AND status = \'active\'', [orgId]),
+      db.query('SELECT COUNT(*) FROM locations WHERE organization_id = $1 AND status = \'active\'', [orgId]),
+      db.query('SELECT COUNT(*) FROM shifts WHERE organization_id = $1 AND date = $2', [orgId, today]),
+      db.query('SELECT COUNT(*) FROM time_off_requests WHERE organization_id = $1 AND status = \'pending\'', [orgId]),
+      db.query('SELECT COUNT(*) FROM shifts WHERE organization_id = $1 AND is_open = true AND date >= $2', [orgId, today]),
+      db.query('SELECT COALESCE(SUM(EXTRACT(EPOCH FROM (s.end_time - s.start_time))/3600), 0) as scheduled, COALESCE(SUM(te.total_hours), 0) as worked, COALESCE(SUM(EXTRACT(EPOCH FROM (s.end_time - s.start_time))/3600 * COALESCE(r.default_hourly_rate, 12)), 0) as cost_scheduled, COALESCE(SUM(te.total_hours * COALESCE(r.default_hourly_rate, 12)), 0) as cost_actual FROM shifts s LEFT JOIN time_entries te ON te.shift_id = s.id LEFT JOIN roles r ON r.id = s.role_id WHERE s.organization_id = $1 AND s.date >= date_trunc(\'week\', CURRENT_DATE) AND s.date < date_trunc(\'week\', CURRENT_DATE) + INTERVAL \'7 days\'', [orgId]),
     ]);
     res.json({
       today: { date: today },
@@ -196,6 +186,11 @@ app.get('/api/dashboard', authMiddleware, async (req, res) => {
         cost_actual: Math.round(parseFloat(weekMetrics.rows[0].cost_actual || 0)),
       },
     });
+  } catch (error) {
+    console.error('Dashboard error:', error);
+    res.status(500).json({ error: 'Failed to load dashboard' });
+  }
+});
   } catch (error) {
     console.error('Dashboard error:', error);
     res.status(500).json({ error: 'Failed to load dashboard' });
