@@ -1,6 +1,5 @@
 // ============================================================
-// UPLIFT DEMO API
-// Complete Express backend with all endpoints
+// UPLIFT DEMO API - FULLY CORRECTED
 // ============================================================
 
 import express from 'express';
@@ -36,10 +35,8 @@ app.use(cors({
 
 app.use(express.json());
 
-// JWT Secret
 const JWT_SECRET = process.env.JWT_SECRET || 'demo-jwt-secret-2026';
 
-// Auth Middleware
 const authMiddleware = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
@@ -599,23 +596,23 @@ app.post('/api/skills', authMiddleware, async (req, res) => {
 });
 
 // ============================================================
-// SHIFTS
+// SHIFTS (CORRECTED - no department_id)
 // ============================================================
 
 app.get('/api/shifts', authMiddleware, async (req, res) => {
   try {
-    const { start, end, location, department, employee } = req.query;
+    const { start, end, location, employee } = req.query;
 
     let query = `
       SELECT s.*, 
              e.first_name as employee_first_name, 
              e.last_name as employee_last_name,
              l.name as location_name,
-             d.name as department_name
+             r.name as role_name
       FROM shifts s
       LEFT JOIN employees e ON e.id = s.employee_id
       LEFT JOIN locations l ON l.id = s.location_id
-      LEFT JOIN departments d ON d.id = s.department_id
+      LEFT JOIN roles r ON r.id = s.role_id
       WHERE s.organization_id = $1
     `;
     const params = [req.user.organizationId];
@@ -632,10 +629,6 @@ app.get('/api/shifts', authMiddleware, async (req, res) => {
     if (location) {
       query += ` AND s.location_id = $${paramIndex++}`;
       params.push(location);
-    }
-    if (department) {
-      query += ` AND s.department_id = $${paramIndex++}`;
-      params.push(department);
     }
     if (employee) {
       query += ` AND s.employee_id = $${paramIndex++}`;
@@ -654,13 +647,13 @@ app.get('/api/shifts', authMiddleware, async (req, res) => {
 
 app.post('/api/shifts', authMiddleware, async (req, res) => {
   try {
-    const { employeeId, locationId, departmentId, date, startTime, endTime } = req.body;
+    const { employeeId, locationId, roleId, date, startTime, endTime } = req.body;
 
     const result = await db.query(
-      `INSERT INTO shifts (organization_id, employee_id, location_id, department_id, date, start_time, end_time, status)
+      `INSERT INTO shifts (organization_id, employee_id, location_id, role_id, date, start_time, end_time, status)
        VALUES ($1, $2, $3, $4, $5, $6, $7, 'scheduled')
        RETURNING *`,
-      [req.user.organizationId, employeeId, locationId, departmentId, date, startTime, endTime]
+      [req.user.organizationId, employeeId, locationId, roleId, date, startTime, endTime]
     );
 
     res.status(201).json({ shift: result.rows[0] });
@@ -744,9 +737,11 @@ app.get('/api/time-off/requests', authMiddleware, async (req, res) => {
     let query = `
       SELECT tor.*, 
              e.first_name as employee_first_name, 
-             e.last_name as employee_last_name
+             e.last_name as employee_last_name,
+             p.name as policy_name
       FROM time_off_requests tor
       JOIN employees e ON e.id = tor.employee_id
+      LEFT JOIN time_off_policies p ON p.id = tor.policy_id
       WHERE tor.organization_id = $1
     `;
     const params = [req.user.organizationId];
@@ -840,7 +835,7 @@ app.get('/api/time/entries', authMiddleware, async (req, res) => {
       params.push(status);
     }
 
-    query += ` ORDER BY te.clock_in DESC`;
+    query += ` ORDER BY te.clock_in DESC LIMIT 500`;
 
     const result = await db.query(query, params);
     res.json({ entries: result.rows });
@@ -1018,15 +1013,18 @@ app.get('/api/reports/hours', authMiddleware, async (req, res) => {
          e.first_name,
          e.last_name,
          l.name as location_name,
-         COUNT(s.id) as shift_count,
-         COALESCE(SUM(EXTRACT(EPOCH FROM (s.end_time - s.start_time))/3600), 0) as total_hours
+         COUNT(te.id) as entry_count,
+         COALESCE(SUM(te.total_hours), 0) as total_hours,
+         COALESCE(SUM(te.regular_hours), 0) as regular_hours,
+         COALESCE(SUM(te.overtime_hours), 0) as overtime_hours
        FROM employees e
        LEFT JOIN locations l ON l.id = e.primary_location_id
-       LEFT JOIN shifts s ON s.employee_id = e.id 
-         AND s.date >= COALESCE($2, CURRENT_DATE - INTERVAL '30 days')
-         AND s.date <= COALESCE($3, CURRENT_DATE)
+       LEFT JOIN time_entries te ON te.employee_id = e.id 
+         AND te.clock_in >= COALESCE($2::date, CURRENT_DATE - INTERVAL '30 days')
+         AND te.clock_in <= COALESCE($3::date, CURRENT_DATE) + INTERVAL '1 day'
        WHERE e.organization_id = $1 AND e.status = 'active'
        GROUP BY e.id, e.first_name, e.last_name, l.name
+       HAVING COUNT(te.id) > 0
        ORDER BY total_hours DESC
        LIMIT 50`,
       [req.user.organizationId, startDate, endDate]
